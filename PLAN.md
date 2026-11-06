@@ -140,3 +140,6 @@ Oba pomiary GPU używają różnych mechanizmów (EXT_disjoint_timer_query vs ti
 jest rzędu niepewności metody. Nawet przyjęta dosłownie, to 0,1 ms z budżetu 16 ms klatki, przy czasie floodu
 wyznaczanym przez PTY. Wniosek: przepisanie renderera na WebGPU nie ma uzasadnienia wydajnościowego; spike potwierdza,
 że ścieżka istnieje (Electron 45 wystawia WebGPU z timestamp-query), więc można do niej wrócić z powodów funkcjonalnych.
+
+### CI (2026-11-07)
+Pierwszy przebieg wykrył błąd (npm install odpalał node-gyp przed zbudowaniem libghostty); naprawiony (`--ignore-scripts` + `build:native`). Po poprawce: ubuntu-24.04 i ubuntu-24.04-arm zielone (build + `npm test` + artefakt). macos-14: job bez runnera, anulowany; do ponowienia.
