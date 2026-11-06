@@ -1,0 +1,91 @@
+<!doctype html><canvas id="a" width="2000" height="1216"></canvas><canvas id="b" width="2000" height="1216"></canvas>
+<script>
+const COLS = 117, ROWS = 36, CW = 17, CH = 33, FRAMES = 300;
+const cells = new Uint32Array(COLS * ROWS * 4);
+const atlas = new Uint8Array(CW * 64 * CH * 64).map((_, i) => (i * 7) & 255);   // 64x64 glyph slots, R8
+const stat = (a) => { a = a.slice().sort((x, y) => x - y); return { median: +a[a.length >> 1].toFixed(3), p95: +a[Math.floor(a.length * .95)].toFixed(3), n: a.length }; };
+const fill = (f) => { for (let i = 0; i < cells.length; i += 4) { cells[i] = (i + f) % 4000 + 1; cells[i + 1] = 0xcdd6f4; cells[i + 2] = 0x1e1e2e; } };
+const frag = (lookup) => `
+ ${lookup}
+ vec3 col(uint v){ return vec3(float((v>>16u)&255u),float((v>>8u)&255u),float(v&255u))/255.0; }`;
+
+async function gl2() {
+  const c = document.getElementById('a'), g = c.getContext('webgl2', { antialias: false, alpha: false });
+  const ext = g.getExtension('EXT_disjoint_timer_query_webgl2');
+  const sh = (t, s) => { const x = g.createShader(t); g.shaderSource(x, s); g.compileShader(x); if (!g.getShaderParameter(x, g.COMPILE_STATUS)) throw g.getShaderInfoLog(x); return x; };
+  const p = g.createProgram();
+  g.attachShader(p, sh(g.VERTEX_SHADER, `#version 300 es
+void main(){ vec2 v=vec2(float((gl_VertexID<<1)&2),float(gl_VertexID&2)); gl_Position=vec4(v*2.0-1.0,0,1); }`));
+  g.attachShader(p, sh(g.FRAGMENT_SHADER, `#version 300 es
+precision highp float; precision highp int; precision highp usampler2D;
+uniform usampler2D uCells; uniform sampler2D uAtlas; out vec4 o;
+void main(){ ivec2 px=ivec2(gl_FragCoord.xy); ivec2 cell=px/ivec2(${CW},${CH}); ivec2 lp=px%ivec2(${CW},${CH});
+ uvec4 t=texelFetch(uCells,cell,0); int s=int(t.r)%4000; float cov=texelFetch(uAtlas,ivec2(s%64,s/64)*ivec2(${CW},${CH})+lp,0).r;
+ vec3 fg=vec3(float((t.g>>16u)&255u),float((t.g>>8u)&255u),float(t.g&255u))/255.0, bg=vec3(float((t.b>>16u)&255u),float((t.b>>8u)&255u),float(t.b&255u))/255.0;
+ o=vec4(mix(bg,fg,cov),1); }`));
+  g.linkProgram(p); g.useProgram(p); g.bindVertexArray(g.createVertexArray());
+  const tex = g.createTexture(); g.activeTexture(g.TEXTURE0); g.bindTexture(g.TEXTURE_2D, tex);
+  g.texImage2D(g.TEXTURE_2D, 0, g.RGBA32UI, COLS, ROWS, 0, g.RGBA_INTEGER, g.UNSIGNED_INT, null);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.NEAREST); g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.NEAREST);
+  const at = g.createTexture(); g.activeTexture(g.TEXTURE1); g.bindTexture(g.TEXTURE_2D, at);
+  g.pixelStorei(g.UNPACK_ALIGNMENT, 1);
+  g.texImage2D(g.TEXTURE_2D, 0, g.R8, CW * 64, CH * 64, 0, g.RED, g.UNSIGNED_BYTE, atlas);
+  g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MIN_FILTER, g.NEAREST); g.texParameteri(g.TEXTURE_2D, g.TEXTURE_MAG_FILTER, g.NEAREST);
+  g.uniform1i(g.getUniformLocation(p, 'uCells'), 0); g.uniform1i(g.getUniformLocation(p, 'uAtlas'), 1);
+  const gpu = [], cpu = [];
+  for (let f = 0; f < FRAMES; f++) {
+    fill(f);
+    const t0 = performance.now(), q = g.createQuery();
+    g.beginQuery(ext.TIME_ELAPSED_EXT, q);
+    g.activeTexture(g.TEXTURE0); g.bindTexture(g.TEXTURE_2D, tex); g.pixelStorei(g.UNPACK_ALIGNMENT, 4);
+    g.texSubImage2D(g.TEXTURE_2D, 0, 0, 0, COLS, ROWS, g.RGBA_INTEGER, g.UNSIGNED_INT, cells);
+    g.viewport(0, 0, c.width, c.height); g.drawArrays(g.TRIANGLES, 0, 3);
+    g.endQuery(ext.TIME_ELAPSED_EXT); cpu.push(performance.now() - t0);
+    for (let w = 0; w < 200 && !g.getQueryParameter(q, g.QUERY_RESULT_AVAILABLE); w++) await new Promise(r => setTimeout(r, 2));
+    if (g.getQueryParameter(q, g.QUERY_RESULT_AVAILABLE)) gpu.push(g.getQueryParameter(q, g.QUERY_RESULT) / 1e6);
+  }
+  return { api: 'webgl2', gpuMs: stat(gpu), cpuSubmitMs: stat(cpu) };
+}
+
+async function wgpu() {
+  if (!navigator.gpu) return { api: 'webgpu', error: 'navigator.gpu missing' };
+  const ad = await navigator.gpu.requestAdapter(); if (!ad) return { api: 'webgpu', error: 'no adapter' };
+  const hasTs = ad.features.has('timestamp-query');
+  const dev = await ad.requestDevice({ requiredFeatures: hasTs ? ['timestamp-query'] : [] });
+  const c = document.getElementById('b'), ctx = c.getContext('webgpu'), fmt = navigator.gpu.getPreferredCanvasFormat();
+  ctx.configure({ device: dev, format: fmt, alphaMode: 'opaque' });
+  const mod = dev.createShaderModule({ code: `
+@group(0) @binding(0) var<storage, read> cells: array<vec4<u32>>;
+@group(0) @binding(1) var atlas: texture_2d<f32>;
+@vertex fn vs(@builtin(vertex_index) i: u32) -> @builtin(position) vec4<f32> { let v = vec2<f32>(f32((i<<1u)&2u), f32(i&2u)); return vec4<f32>(v*2.0-1.0, 0.0, 1.0); }
+fn col(v: u32) -> vec3<f32> { return vec3<f32>(f32((v>>16u)&255u), f32((v>>8u)&255u), f32(v&255u))/255.0; }
+@fragment fn fs(@builtin(position) p: vec4<f32>) -> @location(0) vec4<f32> {
+ let px = vec2<i32>(i32(p.x), i32(p.y)); let cell = px/vec2<i32>(${CW},${CH}); let lp = px%vec2<i32>(${CW},${CH});
+ let t = cells[u32(cell.y)*${COLS}u+u32(cell.x)]; let s = i32(t.x)%4000;
+ let cov = textureLoad(atlas, vec2<i32>(s%64, s/64)*vec2<i32>(${CW},${CH})+lp, 0).r;
+ return vec4<f32>(mix(col(t.z), col(t.y), cov), 1.0); }` });
+  const pipe = dev.createRenderPipeline({ layout: 'auto', vertex: { module: mod, entryPoint: 'vs' }, fragment: { module: mod, entryPoint: 'fs', targets: [{ format: fmt }] } });
+  const buf = dev.createBuffer({ size: cells.byteLength, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+  const at = dev.createTexture({ size: [CW * 64, CH * 64], format: 'r8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
+  dev.queue.writeTexture({ texture: at }, atlas, { bytesPerRow: CW * 64 }, [CW * 64, CH * 64]);
+  const bg = dev.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: [{ binding: 0, resource: { buffer: buf } }, { binding: 1, resource: at.createView() }] });
+  const gpu = [], cpu = [];
+  let qs, resolve, readback;
+  if (hasTs) { qs = dev.createQuerySet({ type: 'timestamp', count: 2 }); resolve = dev.createBuffer({ size: 16, usage: GPUBufferUsage.QUERY_RESOLVE | GPUBufferUsage.COPY_SRC }); readback = dev.createBuffer({ size: 16, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ }); }
+  for (let f = 0; f < FRAMES; f++) {
+    fill(f);
+    const t0 = performance.now();
+    dev.queue.writeBuffer(buf, 0, cells);
+    const enc = dev.createCommandEncoder();
+    const pass = enc.beginRenderPass({ colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: 'clear', storeOp: 'store', clearValue: { r: 0, g: 0, b: 0, a: 1 } }],
+      ...(hasTs ? { timestampWrites: { querySet: qs, beginningOfPassWriteIndex: 0, endOfPassWriteIndex: 1 } } : {}) });
+    pass.setPipeline(pipe); pass.setBindGroup(0, bg); pass.draw(3); pass.end();
+    if (hasTs) { enc.resolveQuerySet(qs, 0, 2, resolve, 0); enc.copyBufferToBuffer(resolve, 0, readback, 0, 16); }
+    dev.queue.submit([enc.finish()]); cpu.push(performance.now() - t0);
+    if (hasTs) { await readback.mapAsync(GPUMapMode.READ); const t = new BigUint64Array(readback.getMappedRange().slice(0)); readback.unmap(); gpu.push(Number(t[1] - t[0]) / 1e6); }
+    else await dev.queue.onSubmittedWorkDone();
+  }
+  return { api: 'webgpu', timestampQuery: hasTs, gpuMs: hasTs ? stat(gpu) : 'n/a', cpuSubmitMs: stat(cpu) };
+}
+window.run = async () => ({ webgl2: await gl2().catch(e => String(e)), webgpu: await wgpu().catch(e => String(e)) });
+</script>

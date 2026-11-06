@@ -125,3 +125,18 @@ ale pozostaje do akceptacji użytkownika.
 
 ### Grafika kitty (2026-11-07)
 Zaimplementowana na API render-state libghostty (`images`/`imageData` w addonie, tekstury + quady w rendererze, pikselowy rozmiar komórki przekazywany do `ghostty_terminal_resize`). Test: `test/app-kitty.js` (kolory narożników po skalowaniu 2x2 -> 12x6 komórek). Ograniczenie: obrazy z warstw BELOW_BACKGROUND/BELOW_TEXT są rysowane nad tekstem (jeden przebieg shadera siatki). Niezweryfikowane: animacje, placeholdery Unicode, duże obrazy PNG z prawdziwych narzędzi (`kitty icat`).
+
+### Spike WebGPU (2026-11-07, `bench/webgpu-spike/`)
+Ten sam rysunek siatki (117x36 komórek, trójkąt pełnoekranowy, odczyt komórki + atlasu R8, wgranie siatki co klatkę,
+okno 2000x1216 px, 300 klatek, ukryte okno, Electron 45, GPU Apple):
+
+| | WebGL2 | WebGPU |
+|---|---|---|
+| czas GPU (mediana) | 0,188 ms | 0,070 ms |
+| czas GPU (p95) | 0,192 ms | 0,176 ms |
+| czas CPU wysłania (mediana) | ~0 ms (rozdzielczość 0,1 ms) | ~0 ms |
+
+Oba pomiary GPU używają różnych mechanizmów (EXT_disjoint_timer_query vs timestamp-query), więc różnica ~0,1 ms
+jest rzędu niepewności metody. Nawet przyjęta dosłownie, to 0,1 ms z budżetu 16 ms klatki, przy czasie floodu
+wyznaczanym przez PTY. Wniosek: przepisanie renderera na WebGPU nie ma uzasadnienia wydajnościowego; spike potwierdza,
+że ścieżka istnieje (Electron 45 wystawia WebGPU z timestamp-query), więc można do niej wrócić z powodów funkcjonalnych.
