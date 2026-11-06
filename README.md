@@ -57,10 +57,11 @@ mysz (raportowanie dla aplikacji TUI, zaznaczanie: przeciąganie, słowo, linia)
 bezpieczne wklejanie (bracketed paste, odrzucanie niebezpiecznego tekstu), scrollback z kompresją w bezczynności,
 motyw Catppuccin Mocha, resize, wiele paneli na jednym kontekście GL, kolorowe emoji (osobny atlas RGBA
 alokowany dopiero przy pierwszym emoji), hiperłącza OSC 8 (Cmd+klik, tylko http(s)/mailto), OSC 52 (domyślnie
-odrzucane; `osc52: 'allow'` w `attach`).
+odrzucane; `osc52: 'allow'` w `attach`), grafika kitty (obrazy RGB/RGBA/PNG, tekstury WebGL, limit 64 MB na terminal;
+ograniczenie: warstwy poniżej tekstu/tła rysowane są nad tekstem).
 
 ## Czego nie ma (świadomie lub jeszcze)
-- Grafika kitty, ligatury.
+- Ligatury.
 - WebGPU i natywna rasteryzacja glifów: nie zrobione; decyzja w `PLAN.md` (rendering nie jest wąskim gardłem, patrz pomiary).
 - Linux: zweryfikowany w Dockerze arm64 (Electron 45 pod xvfb, WebGL przez SwiftShader): pełny `test/app-input.js` przechodzi (`scripts/test-linux-docker.sh`, uruchamiany: `docker run --rm -v $PWD:/src:ro -v $PWD/scripts:/s:ro node:22-bookworm bash /s/test-linux-docker.sh`). Nie testowano na realnym GPU ani x64.
 - Windows: brak ConPTY, nie działa.

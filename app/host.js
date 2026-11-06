@@ -28,6 +28,7 @@ function trySend(id) {
   if (!p || !p.term || !p.wanted) return;
   const { cols, rows, snap } = p;
   const level = g.snapshot(p.term, snap);
+  sendImages(id, p);
   if (level === 0) return;                       // nothing new: keep the request pending
   let n = 0;
   for (let y = 0; y < rows; y++) if (snap[HDR + y]) n++;
@@ -47,9 +48,29 @@ function trySend(id) {
   port.postMessage({ t: 'frame', id, buf: out.buffer });  // MessagePortMain can only transfer ports: buffer is copied (a few KB)
 }
 
+// Kitty graphics: placements go out whenever the list changes; pixels only when an image is new or changed.
+function sendImages(id, p) {
+  const r = g.images(p.term, p.imgGen);
+  if (!r) return;
+  p.imgGen = r.gen;
+  const l = r.list, live = new Set();
+  for (let i = 0; i < l.length; i += 14) {
+    const iid = l[i], igen = l[i + 1];
+    live.add(iid);
+    if (p.sentImg.get(iid) !== igen) {
+      const d = g.imageData(p.term, iid);
+      if (!d) { live.delete(iid); continue; }
+      p.sentImg.set(iid, igen);
+      port.postMessage({ t: 'image', id, imageId: iid, w: d.w, h: d.h, buf: d.rgba });
+    }
+  }
+  for (const k of [...p.sentImg.keys()]) if (!live.has(k)) p.sentImg.delete(k);
+  port.postMessage({ t: 'placements', id, list: l.buffer.slice(l.byteOffset, l.byteOffset + l.byteLength) });
+}
+
 function open(id, msg) {
   if (panes.has(id)) return;
-  const p = { term: null, cols: msg.cols, rows: msg.rows, snap: null, wanted: false, anchor: null, cell: { w: 9, h: 18, sw: 0, sh: 0 } };
+  const p = { term: null, cols: msg.cols, rows: msg.rows, snap: null, wanted: false, anchor: null, cell: { w: 9, h: 18, sw: 0, sh: 0 }, imgGen: 0, sentImg: new Map() };
   panes.set(id, p);
   allocSnap(p);
   const th = theme();
@@ -90,7 +111,12 @@ function handle(data) {
   switch (data.t) {
     case 'close': g.close(term); panes.delete(id); break;
     case 'key': g.key(term, data.code, data.mods, data.action, data.utf8, data.unshifted, !!data.composing); break;
-    case 'metrics': p.cell = { w: data.cw, h: data.ch, sw: data.sw, sh: data.sh }; break;
+    case 'metrics': {
+      const changed = p.cell.w !== data.cw || p.cell.h !== data.ch;
+      p.cell = { w: data.cw, h: data.ch, sw: data.sw, sh: data.sh };
+      if (changed) { g.resize(term, p.cols, p.rows, data.cw, data.ch); p.wanted = true; trySend(id); }   // cell pixel size drives Kitty image geometry
+      break;
+    }
     case 'mouse': mouse(id, p, data); break;
     case 'text': g.input(term, Buffer.from(data.text, 'utf8')); break;           // IME / synthetic typing, no encoding
     case 'paste': if (g.paste(term, data.text) === 1) port.postMessage({ t: 'paste-rejected', id }); break;
@@ -108,7 +134,7 @@ function handle(data) {
       break;
     }
     case 'resize':
-      p.cols = data.cols; p.rows = data.rows; allocSnap(p); g.resize(term, p.cols, p.rows); p.wanted = true; trySend(id); break;
+      p.cols = data.cols; p.rows = data.rows; allocSnap(p); g.resize(term, p.cols, p.rows, p.cell.w, p.cell.h); p.wanted = true; trySend(id); break;
     case 'want': p.wanted = true; trySend(id); break;
     case 'stats': port.postMessage({ t: 'stats', panes: panes.size, mem: g.memory(term), rss: process.memoryUsage().rss }); break;
   }

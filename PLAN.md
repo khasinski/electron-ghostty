@@ -122,3 +122,6 @@ mediana 0,50 ms, p95 1,15 ms, max 1,32 ms na rysowanie. Razem z 2,5 ms po stroni
 dane, że render nie jest wąskim gardłem: przy 0,5 ms GPU backend WebGPU nie może przyspieszyć floodu, którego czas
 wyznacza PTY (~170 MB/s). Decyzja "nie robić WebGPU / natywnej rasteryzacji" opiera się teraz na pomiarze CPU i GPU,
 ale pozostaje do akceptacji użytkownika.
+
+### Grafika kitty (2026-11-07)
+Zaimplementowana na API render-state libghostty (`images`/`imageData` w addonie, tekstury + quady w rendererze, pikselowy rozmiar komórki przekazywany do `ghostty_terminal_resize`). Test: `test/app-kitty.js` (kolory narożników po skalowaniu 2x2 -> 12x6 komórek). Ograniczenie: obrazy z warstw BELOW_BACKGROUND/BELOW_TEXT są rysowane nad tekstem (jeden przebieg shadera siatki). Niezweryfikowane: animacje, placeholdery Unicode, duże obrazy PNG z prawdziwych narzędzi (`kitty icat`).

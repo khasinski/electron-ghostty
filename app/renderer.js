@@ -167,6 +167,74 @@ gl.attachShader(prog, compile(gl.FRAGMENT_SHADER, FS));
 gl.linkProgram(prog);
 if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(prog));
 gl.useProgram(prog);
+// ---------- Kitty graphics: textured quads, drawn after the text of each pane ----------
+const IMG_VS = `#version 300 es
+uniform vec4 uRect;      // x, y, w, h in pane pixels (top-left origin)
+uniform vec2 uView;      // pane size in pixels
+uniform vec4 uSrc;       // source rect in texture uv
+out vec2 vUv;
+void main() {
+  vec2 c = vec2(float(gl_VertexID & 1), float((gl_VertexID >> 1) & 1));
+  vec2 px = uRect.xy + c * uRect.zw;
+  gl_Position = vec4(px.x / uView.x * 2.0 - 1.0, 1.0 - px.y / uView.y * 2.0, 0.0, 1.0);
+  vUv = uSrc.xy + c * uSrc.zw;
+}`;
+const IMG_FS = `#version 300 es
+precision highp float;
+uniform sampler2D uImg;
+in vec2 vUv; out vec4 o;
+void main() { o = texture(uImg, vUv); }`;
+const imgProg = gl.createProgram();
+gl.attachShader(imgProg, compile(gl.VERTEX_SHADER, IMG_VS));
+gl.attachShader(imgProg, compile(gl.FRAGMENT_SHADER, IMG_FS));
+gl.linkProgram(imgProg);
+if (!gl.getProgramParameter(imgProg, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(imgProg));
+const IU = {};
+for (const n of ['uRect', 'uView', 'uSrc', 'uImg']) IU[n] = gl.getUniformLocation(imgProg, n);
+
+function onImage(p, d) {                       // RGBA pixels of one Kitty image -> texture
+  const old = p.images.get(d.imageId); if (old) gl.deleteTexture(old.tex);
+  const tex = gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D, tex);
+  gl.pixelStorei(gl.UNPACK_ALIGNMENT, 4);
+  gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, d.w, d.h, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array(d.buf));
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+  p.images.set(d.imageId, { tex, w: d.w, h: d.h });
+}
+function onPlacements(p, buf) {
+  const l = new Float64Array(buf), n = l.length / 14, items = [], live = new Set();
+  for (let i = 0; i < n; i++) {
+    const o = i * 14;
+    items.push({ id: l[o], layer: l[o + 2], z: l[o + 3], col: l[o + 4], row: l[o + 5], ox: l[o + 6], oy: l[o + 7], pw: l[o + 8], ph: l[o + 9], sx: l[o + 10], sy: l[o + 11], sw: l[o + 12], sh: l[o + 13] });
+    live.add(l[o]);
+  }
+  items.sort((a, b) => a.layer - b.layer || a.z - b.z);
+  p.placements = items;
+  for (const [id, im] of p.images) if (!live.has(id)) { gl.deleteTexture(im.tex); p.images.delete(id); }
+}
+function drawImages(list) {
+  if (!list.some((p) => p.placements.length)) return;
+  gl.useProgram(imgProg);
+  gl.enable(gl.BLEND); gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+  gl.enable(gl.SCISSOR_TEST);
+  gl.activeTexture(gl.TEXTURE0); gl.uniform1i(IU.uImg, 0);
+  for (const p of list) {
+    if (!p.placements.length) continue;
+    const r = p.rect, vy = canvas.height - r.y - r.h;
+    gl.viewport(r.x, vy, r.w, r.h); gl.scissor(r.x, vy, r.w, r.h);
+    gl.uniform2f(IU.uView, r.w, r.h);
+    for (const it of p.placements) {
+      const im = p.images.get(it.id); if (!im || !it.pw || !it.ph) continue;
+      gl.bindTexture(gl.TEXTURE_2D, im.tex);
+      gl.uniform4f(IU.uRect, it.col * cellW + it.ox, it.row * cellH + it.oy, it.pw, it.ph);
+      gl.uniform4f(IU.uSrc, it.sx / im.w, it.sy / im.h, it.sw / im.w, it.sh / im.h);
+      gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
+    }
+  }
+  gl.disable(gl.BLEND); gl.disable(gl.SCISSOR_TEST);
+  gl.useProgram(prog);
+}
 const U = {};
 for (const n of ['uCells', 'uAtlas', 'uColorAtlas', 'uSlotsC', 'uCell', 'uGrid', 'uSlots', 'uView', 'uOrigin', 'uDefBg', 'uCursorColor', 'uCursor']) U[n] = gl.getUniformLocation(prog, n);
 gl.bindVertexArray(gl.createVertexArray());
@@ -180,7 +248,7 @@ let port = null;
 class Pane {
   constructor(id) {
     this.id = id; this.opened = false; this.gotFrame = false;
-    this.cols = 0; this.rows = 0; this.shadow = null; this.grid = null; this.tex = gl.createTexture();
+    this.images = new Map(); this.placements = []; this.cols = 0; this.rows = 0; this.shadow = null; this.grid = null; this.tex = gl.createTexture();
     this.defFg = 0xcdd6f4; this.defBg = 0x1e1e2e;
     this.cursor = { x: 0, y: 0, style: -1, color: 0xcdd6f4 };
     this.dirty = new Set(); this.full = true;
@@ -196,7 +264,7 @@ class Pane {
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     this.full = true;
   }
-  dispose() { gl.deleteTexture(this.tex); }
+  dispose() { gl.deleteTexture(this.tex); for (const im of this.images.values()) gl.deleteTexture(im.tex); this.images.clear(); }
 }
 const send = (msg) => { if (focused) port.postMessage({ ...msg, id: focused.id }); };
 const sendTo = (p, msg) => port.postMessage({ ...msg, id: p.id });
@@ -301,6 +369,7 @@ function draw() {
     gl.uniform3i(U.uCursor, p.cursor.x, p.cursor.y, style);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
+  drawImages(list);
   if (probe) probe();
   stats.frames++; stats.atlasSlots = nextSlot;
   stats.lastFrameMs = performance.now() - t0; stats.worstFrameMs = Math.max(stats.worstFrameMs, stats.lastFrameMs);
@@ -446,6 +515,8 @@ window.addEventListener('message', (e) => {
   port.onmessage = ({ data }) => {
     const p = panes.get(data.id);
     if (data.t === 'frame') { if (p) { stats.tRecv = performance.now(); applyFrame(p, data.buf); scheduleDraw(); } }
+    else if (data.t === 'image') { if (p) { onImage(p, data); stats.images = p.images.size; } }
+    else if (data.t === 'placements') { if (p) { onPlacements(p, data.list); scheduleDraw(); } }
     else if (data.t === 'exit') { if (p) closePane(p); }
     else if (data.t === 'stats') window.__hostStats = data;
     else if (data.t === 'clipboard') { window.__lastClip = data.text; if (data.text) navigator.clipboard.writeText(data.text).catch(() => {}); }

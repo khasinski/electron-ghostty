@@ -59,6 +59,8 @@ struct Term {
   GhosttyRenderState rs = nullptr;
   GhosttyRenderStateRowIterator rows = nullptr;
   GhosttyRenderStateRowCells cells = nullptr;
+  GhosttyRenderStateImageIterator imgs = nullptr;
+  uint32_t cwpx = 0, chpx = 0;   // cell size in pixels (needed for Kitty graphics geometry)
 
   std::mutex mu;  // guards every use of t / rs / rows / cells
   uint32_t version = 0;
@@ -100,6 +102,7 @@ static void term_close(Term* term) {
   term->allBufs.clear(); term->freeBufs.clear(); term->filled.clear();
   if (term->pid > 0) { int st; waitpid(term->pid, &st, WNOHANG); term->pid = -1; }
   if (term->tsfn) { napi_release_threadsafe_function(term->tsfn, napi_tsfn_abort); term->tsfn = nullptr; }
+  if (term->imgs) { ghostty_render_state_image_iterator_free(term->imgs); term->imgs = nullptr; }
   if (term->cells) ghostty_render_state_row_cells_free(term->cells);
   if (term->rows) ghostty_render_state_row_iterator_free(term->rows);
   if (term->rs) ghostty_render_state_free(term->rs);
@@ -334,6 +337,8 @@ static napi_value Create(napi_env env, napi_callback_info info) {
       ghostty_terminal_set(term->t, GHOSTTY_TERMINAL_OPT_SCROLLBACK_MAX_LINES, &ml);
     }
   }
+  uint64_t kittyLimit = 64ull << 20;   // Kitty image storage: 64 MB per terminal
+  ghostty_terminal_set(term->t, GHOSTTY_TERMINAL_OPT_KITTY_IMAGE_STORAGE_LIMIT, &kittyLimit);
   ghostty_terminal_set(term->t, GHOSTTY_TERMINAL_OPT_USERDATA, term);
   GhosttyTerminalWritePtyFn fn = on_write_pty;
   ghostty_terminal_set(term->t, GHOSTTY_TERMINAL_OPT_WRITE_PTY, (const void*)fn);
@@ -429,16 +434,19 @@ static napi_value Write(napi_env env, napi_callback_info info) {
 
 // resize(handle, cols, rows)
 static napi_value Resize(napi_env env, napi_callback_info info) {
-  size_t argc = 3; napi_value argv[3];
+  size_t argc = 5; napi_value argv[5];
   NAPI_CHECK(napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr));
   Term* term = unwrap(env, argv[0]); if (!term) return nullptr;
   uint32_t cols, rows;
   NAPI_CHECK(napi_get_value_uint32(env, argv[1], &cols));
   NAPI_CHECK(napi_get_value_uint32(env, argv[2], &rows));
   std::lock_guard<std::mutex> lk(term->mu);
+  uint32_t cw = term->cwpx, ch = term->chpx;
+  if (argc > 4) { napi_get_value_uint32(env, argv[3], &cw); napi_get_value_uint32(env, argv[4], &ch); }
+  term->cwpx = cw; term->chpx = ch;
   term->cols = (uint16_t)cols; term->nrows = (uint16_t)rows;
-  ghostty_terminal_resize(term->t, term->cols, term->nrows, 0, 0);
-  if (term->master >= 0) { struct winsize ws = {term->nrows, term->cols, 0, 0}; ioctl(term->master, TIOCSWINSZ, &ws); }
+  ghostty_terminal_resize(term->t, term->cols, term->nrows, cw, ch);
+  if (term->master >= 0) { struct winsize ws = {term->nrows, term->cols, (unsigned short)(term->cols * cw), (unsigned short)(term->nrows * ch)}; ioctl(term->master, TIOCSWINSZ, &ws); }
   return nullptr;
 }
 
@@ -810,6 +818,87 @@ static napi_value HyperlinkAt(napi_env env, napi_callback_info info) {
   return out;
 }
 
+// images(handle, knownGen) -> null if the placement list is unchanged since knownGen, else
+// { gen, list: Float64Array(n * 14) } with per item:
+// imageId, imageGen, layer, z, col, row, offX, offY, pw, ph, sx, sy, sw, sh  (all in pixels / cells, viewport relative)
+// Reads the state of the last snapshot() call.
+static napi_value Images(napi_env env, napi_callback_info info) {
+  size_t argc = 2; napi_value argv[2];
+  NAPI_CHECK(napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr));
+  Term* term = unwrap(env, argv[0]); if (!term) return nullptr;
+  double known = 0; napi_get_value_double(env, argv[1], &known);
+  napi_value out; napi_get_null(env, &out);
+  std::lock_guard<std::mutex> lk(term->mu);
+  uint64_t gen = 0;
+  if (ghostty_render_state_get(term->rs, GHOSTTY_RENDER_STATE_DATA_IMAGE_PLACEMENTS_GENERATION, &gen) != GHOSTTY_SUCCESS) return out;
+  if ((double)gen == known) return out;
+  if (!term->imgs && ghostty_render_state_image_iterator_new(nullptr, &term->imgs) != GHOSTTY_SUCCESS) return out;
+  if (ghostty_render_state_get(term->rs, GHOSTTY_RENDER_STATE_DATA_IMAGE_ITERATOR, &term->imgs) != GHOSTTY_SUCCESS) return out;
+  std::vector<double> v;
+  while (ghostty_render_state_image_iterator_next(term->imgs)) {
+    uint32_t id = 0, layer = 0, gc = 0, gr = 0, ox = 0, oy = 0, pw = 0, ph = 0, sx = 0, sy = 0, sw = 0, sh = 0; uint64_t ig = 0; int32_t z = 0, col = 0, row = 0;
+    auto g = [&](GhosttyRenderStateImageData d, void* o) { return ghostty_render_state_image_get(term->imgs, d, o) == GHOSTTY_SUCCESS; };
+    if (!g(GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_ID, &id)) continue;
+    g(GHOSTTY_RENDER_STATE_IMAGE_DATA_IMAGE_GENERATION, &ig); g(GHOSTTY_RENDER_STATE_IMAGE_DATA_LAYER, &layer); g(GHOSTTY_RENDER_STATE_IMAGE_DATA_Z, &z);
+    g(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_COL, &col); g(GHOSTTY_RENDER_STATE_IMAGE_DATA_VIEWPORT_ROW, &row);
+    g(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_X, &ox); g(GHOSTTY_RENDER_STATE_IMAGE_DATA_CELL_OFFSET_Y, &oy);
+    g(GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_WIDTH, &pw); g(GHOSTTY_RENDER_STATE_IMAGE_DATA_PIXEL_HEIGHT, &ph);
+    g(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_X, &sx); g(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_Y, &sy);
+    g(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_WIDTH, &sw); g(GHOSTTY_RENDER_STATE_IMAGE_DATA_SOURCE_HEIGHT, &sh);
+    double item[14] = {(double)id, (double)ig, (double)layer, (double)z, (double)col, (double)row, (double)ox, (double)oy, (double)pw, (double)ph, (double)sx, (double)sy, (double)sw, (double)sh};
+    v.insert(v.end(), item, item + 14);
+  }
+  napi_value ab, fa, o, gv;
+  void* data;
+  NAPI_CHECK(napi_create_arraybuffer(env, v.size() * sizeof(double), &data, &ab));
+  if (!v.empty()) memcpy(data, v.data(), v.size() * sizeof(double));
+  NAPI_CHECK(napi_create_typedarray(env, napi_float64_array, v.size(), ab, 0, &fa));
+  NAPI_CHECK(napi_create_object(env, &o));
+  napi_create_double(env, (double)gen, &gv);
+  napi_set_named_property(env, o, "gen", gv); napi_set_named_property(env, o, "list", fa);
+  return o;
+}
+
+// imageData(handle, imageId) -> { w, h, rgba: Buffer } | null   (all formats converted to RGBA8; max 64 MB)
+static napi_value ImageData(napi_env env, napi_callback_info info) {
+  size_t argc = 2; napi_value argv[2];
+  NAPI_CHECK(napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr));
+  Term* term = unwrap(env, argv[0]); if (!term) return nullptr;
+  uint32_t id; NAPI_CHECK(napi_get_value_uint32(env, argv[1], &id));
+  napi_value out; napi_get_null(env, &out);
+  std::lock_guard<std::mutex> lk(term->mu);
+  GhosttyKittyGraphics kg = nullptr;
+  if (ghostty_terminal_get(term->t, GHOSTTY_TERMINAL_DATA_KITTY_GRAPHICS, &kg) != GHOSTTY_SUCCESS || !kg) return out;
+  GhosttyKittyGraphicsImage im = ghostty_kitty_graphics_image(kg, id);
+  if (!im) return out;
+  uint32_t w = 0, h = 0; GhosttyKittyImageFormat fmt = GHOSTTY_KITTY_IMAGE_FORMAT_RGBA; GhosttyString px = {};
+  ghostty_kitty_graphics_image_get(im, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_WIDTH, &w);
+  ghostty_kitty_graphics_image_get(im, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_HEIGHT, &h);
+  ghostty_kitty_graphics_image_get(im, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_FORMAT, &fmt);
+  if (ghostty_kitty_graphics_image_get(im, GHOSTTY_KITTY_GRAPHICS_IMAGE_DATA_PIXELS, &px) != GHOSTTY_SUCCESS) return out;
+  size_t n = (size_t)w * h;
+  if (!w || !h || n * 4 > (64u << 20)) return out;
+  size_t bpp = fmt == GHOSTTY_KITTY_IMAGE_FORMAT_RGB ? 3 : fmt == GHOSTTY_KITTY_IMAGE_FORMAT_GRAY_ALPHA ? 2 : fmt == GHOSTTY_KITTY_IMAGE_FORMAT_GRAY ? 1 : 4;
+  if (px.len < n * bpp) return out;
+  napi_value buf; uint8_t* d;
+  NAPI_CHECK(napi_create_buffer(env, n * 4, (void**)&d, &buf));
+  const uint8_t* s = px.ptr;
+  for (size_t i = 0; i < n; i++, d += 4, s += bpp) {
+    switch (bpp) {
+      case 4: d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = s[3]; break;
+      case 3: d[0] = s[0]; d[1] = s[1]; d[2] = s[2]; d[3] = 255; break;
+      case 2: d[0] = d[1] = d[2] = s[0]; d[3] = s[1]; break;
+      default: d[0] = d[1] = d[2] = s[0]; d[3] = 255;
+    }
+  }
+  napi_value o, v;
+  NAPI_CHECK(napi_create_object(env, &o));
+  napi_create_uint32(env, w, &v); napi_set_named_property(env, o, "w", v);
+  napi_create_uint32(env, h, &v); napi_set_named_property(env, o, "h", v);
+  napi_set_named_property(env, o, "rgba", buf);
+  return o;
+}
+
 // stats(handle) -> instrumentation counters
 static napi_value Stats(napi_env env, napi_callback_info info) {
   size_t argc = 1; napi_value argv[1];
@@ -851,6 +940,8 @@ static napi_value Init(napi_env env, napi_value exports) {
     {"paste", nullptr, Paste, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"setClipboardPolicy", nullptr, SetClipboardPolicy, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"hyperlinkAt", nullptr, HyperlinkAt, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"images", nullptr, Images, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"imageData", nullptr, ImageData, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"stats", nullptr, Stats, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"close", nullptr, Close, nullptr, nullptr, nullptr, napi_default, nullptr},
   };

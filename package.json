@@ -11,7 +11,7 @@
     "build:libghostty": "sh scripts/build-libghostty.sh",
     "build:native": "npm run build:libghostty && node-gyp rebuild",
     "test": "node test/smoke.js && node test/input.js",
-    "test:app": "GHOSTTY_SCRIPT=$PWD/test/app-input.js electron ."
+    "test:app": "GHOSTTY_SCRIPT=$PWD/test/app-input.js electron . && GHOSTTY_SCRIPT=$PWD/test/app-kitty.js electron ."
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",
