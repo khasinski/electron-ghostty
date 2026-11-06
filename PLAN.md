@@ -143,3 +143,5 @@ wyznaczanym przez PTY. Wniosek: przepisanie renderera na WebGPU nie ma uzasadnie
 
 ### CI (2026-11-07)
 Pierwszy przebieg wykrył błąd (npm install odpalał node-gyp przed zbudowaniem libghostty); naprawiony (`--ignore-scripts` + `build:native`). Po poprawce: ubuntu-24.04 i ubuntu-24.04-arm zielone (build + `npm test` + artefakt). macos-14: job bez runnera, anulowany; do ponowienia.
+
+CI po zmianie na `macos-latest`: macOS, ubuntu-24.04 i ubuntu-24.04-arm zielone (2026-11-07). Poprzednia diagnoza "brak runnera/kolejka" dla macos-14 była niepewna: job kończył się w sekundę, więc raczej odmowa startu niż kolejka.

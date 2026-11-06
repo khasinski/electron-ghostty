@@ -65,5 +65,5 @@ ograniczenie: warstwy poniżej tekstu/tła rysowane są nad tekstem).
 - WebGPU i natywna rasteryzacja glifów: nie zrobione; decyzja w `PLAN.md` (rendering nie jest wąskim gardłem, patrz pomiary).
 - Linux: zweryfikowany w Dockerze arm64 (Electron 45 pod xvfb, WebGL przez SwiftShader): pełny `test/app-input.js` przechodzi (`scripts/test-linux-docker.sh`, uruchamiany: `docker run --rm -v $PWD:/src:ro -v $PWD/scripts:/s:ro node:22-bookworm bash /s/test-linux-docker.sh`). Nie testowano na realnym GPU ani x64.
 - Windows: brak ConPTY, nie działa.
-- Prebuilds/CI: `.github/workflows/ci.yml` przechodzi na GitHubie dla Linux x64 i arm64 (build libghostty + addon, `npm test`, artefakt prebuild). Job macOS nie dostał runnera (kolejka, anulowany po ~5 min), więc macOS w CI niezweryfikowany. Prebuildy nie są publikowane na npm.
+- Prebuilds/CI: `.github/workflows/ci.yml` przechodzi na GitHubie dla macOS (`macos-latest`; `macos-14` nie startował), Linux x64 i arm64: build libghostty + addon, `npm test`, artefakt prebuild. Prebuildy nie są publikowane na npm.
 - `MessagePortMain` kopiuje bufory klatek (kilka KB na klatkę).
