@@ -145,3 +145,10 @@ wyznaczanym przez PTY. Wniosek: przepisanie renderera na WebGPU nie ma uzasadnie
 Pierwszy przebieg wykrył błąd (npm install odpalał node-gyp przed zbudowaniem libghostty); naprawiony (`--ignore-scripts` + `build:native`). Po poprawce: ubuntu-24.04 i ubuntu-24.04-arm zielone (build + `npm test` + artefakt). macos-14: job bez runnera, anulowany; do ponowienia.
 
 CI po zmianie na `macos-latest`: macOS, ubuntu-24.04 i ubuntu-24.04-arm zielone (2026-11-07). Poprzednia diagnoza "brak runnera/kolejka" dla macos-14 była niepewna: job kończył się w sekundę, więc raczej odmowa startu niż kolejka.
+
+## Zamknięcie zakresu (2026-11-07, decyzje użytkownika)
+- Windows ConPTY: poza zakresem "na chwilę obecną" (decyzja użytkownika).
+- Ligatury: odłożone ("zostańmy bez ligatur na razie"); szkic podejścia (serie symboli rasteryzowane jako ciąg na n slotów
+  atlasu, opt-in, cache ciągów, pomiar wpływu na flood) jest w historii rozmowy, nic nie zbudowano.
+- Natywna rasteryzacja glifów: nie budowana; pomiary (CPU 2,5 ms, GPU mediana 0,5 ms na klatkę przy floodzie) nie pokazują jej na ścieżce gorącej.
+Zrealizowane: rdzeń + benchmarki, wejście/mysz/zaznaczenie/IME/schowek, panele, emoji, OSC 8/52, kitty graphics, WebGPU spike, Linux (Docker + CI), CI macOS/Linux.
