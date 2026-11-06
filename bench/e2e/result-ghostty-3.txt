@@ -1,0 +1,1 @@
+{'done': True, 'seconds': 0.02, 'MBps': 1600.2, 'idleMB': 198.5, 'afterFloodMB': 505.5, 'settledMB': 192.5} {'Browser#50771': 46, 'GPU:GPU#50793': 99, 'Utility:network.mojom.NetworkService#50794': 7.5, 'Tab#50810': 22, 'Utility:node.mojom.NodeService#50812': 18}

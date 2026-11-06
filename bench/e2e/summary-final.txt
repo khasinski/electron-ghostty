@@ -1,0 +1,10 @@
+xterm.js 6.0.0 + webgl  (5/5 completed)
+   seconds     : 2.6 2.7 2.5 2.4 2.4  median 2.49
+   MB/s        : 13.7 13.3 14.6 15.2 15.0  median 14.6
+   idle MB     : 161.5 161.6 161.5 162.5 170.6  median 161.6
+   settled MB  : 477.5 480.6 474.5 499.5 497.6  median 480.6
+electron-ghostty (libghostty-vt + WebGL2)  (5/5 completed)
+   seconds     : 0.8 0.8 0.8 0.9 0.8  median 0.80
+   MB/s        : 47.9 47.6 45.2 40.1 44.2  median 45.2
+   idle MB     : 172.7 172.6 172.6 172.6 172.7  median 172.6
+   settled MB  : 200.7 208.7 201.6 204.6 201.7  median 201.7

@@ -1,0 +1,9 @@
+node_modules/
+build/
+native/
+vendor/ghostty/
+bin/
+bench/e2e/corpus.txt
+bench/corpus*
+bench/*.txt
+!bench/RESULTS.md

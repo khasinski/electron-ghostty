@@ -1,0 +1,12 @@
+<!doctype html>
+<html><head><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'">
+<title>electron-ghostty</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #1e1e2e; overflow: hidden; }
+  #wrap { position: absolute; inset: 0; }
+  canvas { display: block; width: 100%; height: 100%; }
+  #ime { position: absolute; left: 0; top: 0; width: 1px; height: 1px; opacity: 0; border: 0; padding: 0; resize: none; overflow: hidden; }
+</style></head>
+<body><div id="wrap"><canvas id="c"></canvas><textarea id="ime" autocapitalize="off" autocomplete="off" autocorrect="off" spellcheck="false"></textarea></div>
+<script src="keymap.js"></script><script src="renderer.js"></script></body></html>

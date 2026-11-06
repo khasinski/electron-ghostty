@@ -1,0 +1,1 @@
+RESULT {"label":"electron-ghostty (libghostty-vt + WebGL2)","done":true,"corpusMB":36.3,"seconds":0.43,"MBps":84.6,"idleMB":503.6,"afterFloodMB":534.6,"settledMB":176.6,"settledParts":{"Browser#36608":47,"GPU:GPU#36636":76,"Utility:network.mojom.NetworkService#36637":7.6,"Tab#36656":24,"Utility:node.mojom.NodeService#36661":22}}
