@@ -68,22 +68,45 @@ function sendImages(id, p) {
   port.postMessage({ t: 'placements', id, list: l.buffer.slice(l.byteOffset, l.byteOffset + l.byteLength) });
 }
 
+function themeFrom(extra) {
+  const th = theme();
+  if (!extra) return th;
+  const num = (v) => (typeof v === 'number' ? v >>> 0 & 0xffffff : undefined);
+  const out = { ...th };
+  for (const k of ['fg', 'bg', 'cursor']) if (num(extra[k]) !== undefined) out[k] = num(extra[k]);
+  if (Array.isArray(extra.ansi)) { const pal = new Uint32Array(th.pal); extra.ansi.slice(0, 16).forEach((c, i) => { if (num(c) !== undefined) pal[i] = num(c); }); out.pal = pal; }
+  return out;
+}
+
+// mode 'pty' (default): the host owns the shell + PTY, bytes never reach JS. mode 'external': xterm.js-style, the page
+// feeds bytes with write() and receives the child-bound bytes (keys, query replies) as 'data' messages.
 function open(id, msg) {
   if (panes.has(id)) return;
-  const p = { term: null, cols: msg.cols, rows: msg.rows, snap: null, wanted: false, anchor: null, cell: { w: 9, h: 18, sw: 0, sh: 0 }, imgGen: 0, sentImg: new Map() };
+  const p = { term: null, cols: msg.cols, rows: msg.rows, snap: null, wanted: false, anchor: null, cell: { w: 9, h: 18, sw: 0, sh: 0 }, imgGen: 0, sentImg: new Map(), mode: msg.mode === 'external' ? 'external' : 'pty' };
   panes.set(id, p);
   allocSnap(p);
-  const th = theme();
+  const th = themeFrom(msg.theme);
+  const lines = Math.min(Math.max(+msg.scrollbackLines || 0, 0), 10000000);
   p.term = g.create(p.cols, p.rows, config.scrollbackBytes || Number.MAX_SAFE_INTEGER,
-    config.scrollbackLines || +process.env.GHOSTTY_SCROLLBACK_LINES || 100000);
+    lines || config.scrollbackLines || +process.env.GHOSTTY_SCROLLBACK_LINES || 100000);
   g.setTheme(p.term, th.fg, th.bg, th.cursor, th.pal);
   g.setClipboardPolicy(p.term, config.osc52 === 'allow' ? 1 : 0);
-  g.spawn(p.term, config.shell || process.env.SHELL || '/bin/zsh', config.args || ['-l'], config.cwd || process.env.HOME,
-    (kind, status, extra) => {
-      if (kind === 0) trySend(id);
-      else if (kind === 1) port.postMessage({ t: 'exit', id, status });
-      else if (kind === 2) port.postMessage({ t: 'clipboard-write', id, text: extra });   // OSC 52 (only when config.osc52 === 'allow')
-    });
+  const onEvent = (kind, status, extra) => {
+    if (kind === 0) trySend(id);
+    else if (kind === 1) port.postMessage({ t: 'exit', id, status });
+    else if (kind === 2) port.postMessage({ t: 'clipboard-write', id, text: extra });   // OSC 52 (only when config.osc52 === 'allow')
+    else if (kind === 3) port.postMessage({ t: 'data', id, buf: extra });                // external mode: bytes for the child
+    else if (kind === 4) port.postMessage({ t: 'bell', id });
+    else if (kind === 5) port.postMessage({ t: 'title', id, title: extra });
+  };
+  // The command to run comes from the embedder's config only: the page may not choose what to execute.
+  if (p.mode === 'external') g.attach(p.term, onEvent);
+  else g.spawn(p.term, config.shell || process.env.SHELL || '/bin/zsh', config.args || ['-l'], config.cwd || process.env.HOME, onEvent);
+}
+
+function selectionChanged(id, p) {
+  const text = g.selectionText(p.term) || '';
+  port.postMessage({ t: 'selection', id, text: text.length <= 1048576 ? text : text.slice(0, 1048576), truncated: text.length > 1048576 });
 }
 
 // Mouse: if the program enabled mouse tracking it owns the mouse (unless Shift is held); otherwise we select text.
@@ -98,11 +121,13 @@ function mouse(id, p, m) {
     else { g.select(p.term, 4, 0, 0, 0, 0); p.anchor = { x: m.x, y: m.y }; }
   } else if (m.action === 2 && p.anchor && m.pressed) {  // drag
     g.select(p.term, 0, p.anchor.x, p.anchor.y, m.x, m.y);
-  } else if (m.action === 1) p.anchor = null;             // release
+  } else if (m.action === 1) { p.anchor = null; selectionChanged(id, p); }   // release
+  if (m.action === 0 && m.detail >= 2) selectionChanged(id, p);
   trySend(id);
 }
 
 function handle(data) {
+  if (!data) return;                       // e.g. a message the port could not deserialize (transferred ArrayBuffer)
   const id = data.id || 1;
   if (data.t === 'open') return open(id, data);
   const p = panes.get(id);
@@ -127,7 +152,16 @@ function handle(data) {
       break;
     }
     case 'copy': port.postMessage({ t: 'clipboard', id, text: g.selectionText(term) }); break;
-    case 'selectAll': g.select(term, 3, 0, 0, 0, 0); trySend(id); break;
+    case 'selectAll': g.select(term, 3, 0, 0, 0, 0); selectionChanged(id, p); trySend(id); break;
+    case 'selectRange': g.select(term, 0, data.x1, data.y1, data.x2, data.y2); selectionChanged(id, p); trySend(id); break;
+    case 'clearSelection': g.select(term, 4, 0, 0, 0, 0); selectionChanged(id, p); trySend(id); break;
+    case 'write': {                                                                 // external mode: VT bytes from the page
+      g.write(term, Buffer.from(data.buf));
+      if (data.ack && data.ack.length) port.postMessage({ t: 'ack', id, acks: data.ack });
+      break;
+    }
+    case 'scrollLines': g.scroll(term, data.delta | 0); trySend(id); break;
+    case 'theme': { const th = themeFrom(data.theme); g.setTheme(term, th.fg, th.bg, th.cursor, th.pal); p.wanted = true; trySend(id); break; }
     case 'link': {                                                                // Cmd+click on an OSC 8 hyperlink
       const uri = g.hyperlinkAt(term, data.x, data.y);
       if (uri) port.postMessage({ t: 'open-link', id, uri });

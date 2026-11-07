@@ -152,3 +152,10 @@ CI po zmianie na `macos-latest`: macOS, ubuntu-24.04 i ubuntu-24.04-arm zielone 
   atlasu, opt-in, cache ciągów, pomiar wpływu na flood) jest w historii rozmowy, nic nie zbudowano.
 - Natywna rasteryzacja glifów: nie budowana; pomiary (CPU 2,5 ms, GPU mediana 0,5 ms na klatkę przy floodzie) nie pokazują jej na ścieżce gorącej.
 Zrealizowane: rdzeń + benchmarki, wejście/mysz/zaznaczenie/IME/schowek, panele, emoji, OSC 8/52, kitty graphics, WebGPU spike, Linux (Docker + CI), CI macOS/Linux.
+
+### API w stylu xterm.js (2026-11-07)
+Fasada `app/terminal.js` (README: tabela zaimplementowane / not implemented). Dwa tryby: `pty` (host trzyma PTY, pełna
+szybkość) i `external` (aplikacja woła `write()`, jak w xterm.js; 5,7x szybciej i 3,9x mniej pamięci niż xterm.js na
+ścieżce write, patrz `bench/RESULTS.md`). Zmiany pod spodem: renderer jako fabryka `createRenderer` (każdy `Terminal` ma
+własny canvas/kontekst GL, wspólny port do hosta), tryb bez PTY w addonie (`attach`), zdarzenia bell/title, kompresja
+w bezczynności także w trybie `external`. Testy: `test/app-xterm.js`, `test/app-xterm-pty.js`.

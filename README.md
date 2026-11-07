@@ -32,8 +32,53 @@ app.whenReady().then(() => {
 ```
 
 Strona musi zawierać `<canvas id="c">`, `<textarea id="ime">` oraz skrypty `keymap.js` i `renderer.js`
-(zobacz `app/index.html`; pliki wskazuje `assetPath('keymap.js')`, `assetPath('renderer.js')`).
+(zobacz `app/index.html`) albo użyć API w stylu xterm.js opisanego niżej (`app/xterm-demo.html`).
 Renderer obsługuje wiele paneli na jednym kontekście WebGL2 (Cmd+D dzieli, Cmd+W zamyka, Cmd+[ / ] przełącza fokus).
+
+## API w stylu xterm.js (`app/terminal.js`)
+
+Strona ładuje `keymap.js`, `renderer.js`, `terminal.js` (ścieżki: `assetPath(...)`) i dostaje `window.ghostty`:
+
+```js
+const { Terminal, FitAddon, WebglAddon } = window.ghostty;
+const term = new Terminal({ mode: 'external' });   // jak xterm.js: aplikacja ma własny PTY i woła write()
+term.loadAddon(new FitAddon());
+term.open(document.getElementById('t'));
+ptyProcess.onData((d) => term.write(d));            // np. node-pty w procesie głównym, przez IPC
+term.onData((d) => ptyProcess.write(d));            // klawisze zakodowane przez libghostty
+term.onResize(({ cols, rows }) => ptyProcess.resize(cols, rows));
+```
+
+`mode: 'pty'` (domyślny w demo bez `write`) uruchamia powłokę w procesie hosta: bajty nigdy nie trafiają do JS
+(to daje pełną przepustowość PTY). Polecenie do uruchomienia ustawia tylko proces główny (`attach(win, { shell })`),
+strona nie może wybrać, co wykonać.
+
+Zasada: zaimplementowane jest tylko to, co nie psuje modelu wydajności (bajty i scrollback zostają w natywnym hoście,
+strona trzyma tylko widoczne wiersze). Reszta rzuca `Error('... is not implemented (powód)')`.
+
+| Zaimplementowane | Uwagi |
+|---|---|
+| `new Terminal(opts)`: `cols`, `rows`, `fontSize`, `fontFamily`, `theme` (kolory `#rgb`/`#rrggbb`), `scrollback`, `mode` | bez `cols`/`rows` terminal dopasowuje się do kontenera |
+| `open`, `dispose`, `resize`, `focus`, `blur`, `refresh` (no-op), `clearTextureAtlas` | |
+| `write(data, cb)`, `writeln`, `paste`, `input`, `clear`, `reset` | `cb` po sparsowaniu przez hosta; zapisy w jednym mikrozadaniu są sklejane |
+| `onData`, `onBell`, `onTitleChange`, `onResize`, `onSelectionChange`, `onScroll`, `onCursorMove`, `onRender`, `onKey`, `onExit` (nasze) | `onKey.key` to klawisz DOM, nie sekwencja |
+| `scrollLines/Pages/ToTop/ToBottom/ToLine` | |
+| `hasSelection`, `getSelection` (synchroniczne, z cache do 1 MiB), `selectAll`, `select`, `selectLines`, `clearSelection` | `select`/`selectLines` tylko dla widocznych wierszy |
+| `buffer.active`: `cursorX/Y`, `viewportY`, `baseY`, `length`, `getLine(y).translateToString()` | tylko widoczne wiersze, poza widokiem `getLine` zwraca `undefined` |
+| `options` w locie: `fontSize`, `fontFamily`, `theme`; `attachCustomKeyEventHandler` (tylko keydown); `loadAddon`; `FitAddon` | pozostałe opcje są ignorowane z jednorazowym ostrzeżeniem |
+| `WebglAddon`, `CanvasAddon` | no-op: renderer jest zawsze GPU |
+
+| Not implemented | Powód |
+|---|---|
+| `parser.*`, `registerCsi/Dcs/Esc/OscHandler` | parser działa w innym wątku/procesie i nie może synchronicznie wołać JS |
+| `buffer.normal/alternate`, `buffer.active.type`, `IBufferLine.getCell`, dostęp do wierszy poza widokiem | scrollback jest w hoście; kopia w stronie zużyłaby pamięć, którą ta biblioteka oszczędza |
+| `registerMarker`, `registerDecoration`, `markers` | j.w. |
+| `registerLinkProvider`, `WebLinksAddon` | hiperłącza OSC 8 działają natywnie (Cmd+klik); dopasowanie URL w tekście wymaga scrollbacku |
+| `SearchAddon`, `SerializeAddon` | wymagają dostępu do całego bufora |
+| `unicode`, `modes`, `onBinary`, `onLineFeed`, `onWriteParsed`, `registerCharacterJoiner`, `attachCustomWheelEventHandler` | brak odpowiednika lub brak powodu, by mirrorować stan do strony |
+
+Pomiar ścieżki `write()` (bez PTY, ten sam korpus 36 MB, porcje 64 KB, 5 przebiegów w przeplocie, `bench/write-path/run.sh`):
+xterm.js 0,54 s (68 MB/s), electron-ghostty 0,09 s (383 MB/s), czyli ok. 5,7x; pamięć przypisana terminalowi 276 vs 71 MB.
 
 ## Budowanie
 

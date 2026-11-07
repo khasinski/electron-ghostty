@@ -47,4 +47,4 @@ async function run(app, win, { label, send, isDoneExpr }) {
   }));
   app.quit();
 }
-module.exports = { run };
+module.exports = { run, treeFootprint };

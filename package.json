@@ -11,7 +11,8 @@
     "build:libghostty": "sh scripts/build-libghostty.sh",
     "build:native": "npm run build:libghostty && node-gyp rebuild",
     "test": "node test/smoke.js && node test/input.js",
-    "test:app": "GHOSTTY_SCRIPT=$PWD/test/app-input.js electron . && GHOSTTY_SCRIPT=$PWD/test/app-kitty.js electron ."
+    "test:app": "GHOSTTY_SCRIPT=$PWD/test/app-input.js electron . && GHOSTTY_SCRIPT=$PWD/test/app-kitty.js electron . && GHOSTTY_SCRIPT=$PWD/test/app-panes.js electron . && GHOSTTY_PAGE=xterm-demo.html GHOSTTY_SCRIPT=$PWD/test/app-xterm.js electron . && GHOSTTY_MODE=pty GHOSTTY_PAGE=xterm-demo.html GHOSTTY_SCRIPT=$PWD/test/app-xterm-pty.js electron .",
+    "bench:write-path": "bench/write-path/run.sh 5"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",

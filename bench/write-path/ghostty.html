@@ -1,0 +1,16 @@
+<!doctype html><html><head><meta charset="utf-8">
+<style>html,body{margin:0;height:100%;background:#000}#t{position:absolute;inset:0}</style></head>
+<body><div id="t"></div>
+<script src="../../app/keymap.js"></script><script src="../../app/renderer.js"></script><script src="../../app/terminal.js"></script>
+<script src="common.js"></script>
+<script>
+const { Terminal, FitAddon } = window.ghostty;
+const term = new Terminal({ scrollback: 100000, fontFamily: 'Menlo', fontSize: 14 });
+term.loadAddon(new FitAddon());
+term.open(document.getElementById('t'));
+window.__ready = new Promise((r) => term.onResize(() => r(true)));
+// NOOP=1: same corpus handling in the page but nothing is written, to separate the page's own copy of the corpus from the terminal's memory
+const noop = location.search.includes('noop');
+window.__run = () => window.__feed((c, cb) => (noop ? (cb && cb()) : term.write(c, cb)));
+window.__lines = () => term.buffer.active.length;
+</script></body></html>

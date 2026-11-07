@@ -4,12 +4,33 @@
 // The shader does everything per pixel, so a frame is a single draw call regardless of grid size.
 
 const HDR = 16;
-const FONT_FAMILY = 'Menlo, "SF Mono", Monaco, monospace';
-const FONT_CSS_PX = 14;
+const DEFAULT_FONT_FAMILY = 'Menlo, "SF Mono", Monaco, monospace';
 const SELECTION_BG = 0x45475a;
 const ATLAS_SIZE = 2048; // R8 => 4 MB, hard cap (LRU-less reset when full)
 
-const canvas = document.getElementById('c');
+// One MessagePort per window is shared by every renderer (terminal) on the page; messages are routed by pane id.
+const hub = (() => {
+  let port = null, nextId = 1;
+  const routes = new Map(), waiting = [];
+  window.addEventListener('message', (e) => {
+    if (e.data !== 'term-port' || !e.ports[0]) return;
+    port = e.ports[0];
+    port.onmessage = ({ data }) => { const r = routes.get(data.id); if (r) r(data); };
+    for (const cb of waiting.splice(0)) cb(port);
+  });
+  return {
+    id: () => nextId++,
+    route: (id, fn) => routes.set(id, fn),
+    unroute: (id) => routes.delete(id),
+    whenPort: (cb) => (port ? cb(port) : waiting.push(cb)),
+  };
+})();
+
+function createRenderer(cfg = {}) {
+let FONT_FAMILY = cfg.fontFamily || DEFAULT_FONT_FAMILY, FONT_CSS_PX = cfg.fontSize || 14;
+const W = cfg.expose ? window : {};          // debug/test probes only on the demo page
+const cleanups = [];
+const canvas = cfg.canvas, ime = cfg.ime;
 const gl = canvas.getContext('webgl2', { antialias: false, alpha: false, desynchronized: true, powerPreference: 'high-performance' });
 if (!gl) throw new Error('WebGL2 unavailable');
 
@@ -241,7 +262,7 @@ gl.bindVertexArray(gl.createVertexArray());
 
 // ---------- panes: many terminals, one canvas, one GL context, one glyph atlas ----------
 const panes = new Map();       // id -> Pane (insertion order = left-to-right)
-let focused = null, nextId = 1;
+let focused = null;
 const GAP = 2;                 // device px between panes
 let port = null;
 
@@ -267,7 +288,7 @@ class Pane {
   dispose() { gl.deleteTexture(this.tex); for (const im of this.images.values()) gl.deleteTexture(im.tex); this.images.clear(); }
 }
 const send = (msg) => { if (focused) port.postMessage({ ...msg, id: focused.id }); };
-const sendTo = (p, msg) => port.postMessage({ ...msg, id: p.id });
+const sendTo = (p, msg, transfer) => port.postMessage({ ...msg, id: p.id }, transfer || []);
 
 function mix(a, b, t) { // a*(1-t)+b*t per channel on 0xRRGGBB
   const r = ((a >> 16) & 255) * (1 - t) + ((b >> 16) & 255) * t, g = ((a >> 8) & 255) * (1 - t) + ((b >> 8) & 255) * t, bl = (a & 255) * (1 - t) + (b & 255) * t;
@@ -322,17 +343,23 @@ function applyFrame(p, buf) {
   }
   if (w[9] === 2) p.full = true;
   p.gotFrame = true;
+  p.scrollTotal = w[10]; p.cursorVisible = (w[5] & 1) !== 0;
+  if (p.on) {                                    // events for the xterm-style facade
+    if (w[11] !== p.scrollOffset) { p.scrollOffset = w[11]; p.on({ t: 'scroll', pos: w[11] }); }
+    if (w[3] !== p.curX || w[4] !== p.curY) { p.curX = w[3]; p.curY = w[4]; p.on({ t: 'cursor' }); }
+  } else p.scrollOffset = w[11];
 }
 
 // ---------- frame loop ----------
 let framePending = false, drawScheduled = false, lastDrawAt = 0, probe = null;
 const stats = { frames: 0, cellsUploaded: 0, lastFrameMs: 0, worstFrameMs: 0, atlasSlots: 0 };
-window.__ghostty = stats;
-window.sendInput = (s) => send({ t: 'text', text: s });
-window.__send = (msg) => send(msg);
-window.__panes = () => [...panes.values()].map((p) => ({ id: p.id, cols: p.cols, rows: p.rows, rect: p.rect, focused: p === focused }));
+W.__ghostty = stats;
+if (cfg.expose) for (const k of ['cellW', 'cellH', 'dpr']) Object.defineProperty(window, k, { configurable: true, get: () => ({ cellW, cellH, dpr })[k] });
+W.sendInput = (s) => send({ t: 'text', text: s });
+W.__send = (msg) => send(msg);
+W.__panes = () => [...panes.values()].map((p) => ({ id: p.id, cols: p.cols, rows: p.rows, rect: p.rect, focused: p === focused }));
 // Debug: grid text of a pane (ground truth for tests, independent of GL output).
-window.__dump = (id) => { const p = id ? panes.get(id) : focused; const out = []; if (!p || !p.shadow) return out;
+W.__dump = (id) => { const p = id ? panes.get(id) : focused; const out = []; if (!p || !p.shadow) return out;
   for (let y = 0; y < p.rows; y++) { let l = ''; for (let x = 0; x < p.cols; x++) { const cp = p.shadow[(y * p.cols + x) * 4]; l += cp ? String.fromCodePoint(cp) : ' '; } out.push(l.trimEnd()); }
   while (out.length && !out[out.length - 1]) out.pop(); return out; };
 
@@ -354,7 +381,8 @@ function draw() {
   // The drawing buffer is cleared after each composite, so every pane is redrawn every frame: one draw call each.
   gl.disable(gl.SCISSOR_TEST);
   gl.viewport(0, 0, canvas.width, canvas.height);
-  gl.clearColor(0.067, 0.067, 0.106, 1); gl.clear(gl.COLOR_BUFFER_BIT);
+  const [cr, cg, cb] = list.length === 1 ? rgb(list[0].defBg) : [0.067, 0.067, 0.106];
+  gl.clearColor(cr, cg, cb, 1); gl.clear(gl.COLOR_BUFFER_BIT);
   gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, atlasTex); gl.uniform1i(U.uAtlas, 1);
   gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, colorTex || atlasTex); gl.uniform1i(U.uColorAtlas, 2);
   gl.uniform2i(U.uCell, cellW, cellH); gl.uniform2i(U.uSlots, slotsPerRow, slotRows); gl.uniform2i(U.uSlotsC, slotsPerRowC, slotRowsC);
@@ -371,6 +399,7 @@ function draw() {
   }
   drawImages(list);
   if (probe) probe();
+  if (cfg.onRender) cfg.onRender();
   stats.frames++; stats.atlasSlots = nextSlot;
   stats.lastFrameMs = performance.now() - t0; stats.worstFrameMs = Math.max(stats.worstFrameMs, stats.lastFrameMs);
   framePending = false;
@@ -398,19 +427,19 @@ function layout() {
   list.forEach((p, i) => {
     p.rect = { x: i * (w + GAP), y: 0, w, h: canvas.height };
     const c = Math.max(2, Math.floor(w / cellW)), r = Math.max(1, Math.floor(canvas.height / cellH));
-    if (!p.opened) { p.opened = true; sendTo(p, { t: 'open', cols: c, rows: r }); p.alloc(c, r); sendTo(p, { t: 'want' }); }
-    else if (c !== p.cols || r !== p.rows) { sendTo(p, { t: 'resize', cols: c, rows: r }); p.alloc(c, r); }
+    if (!p.opened) { p.opened = true; sendTo(p, { t: 'open', cols: c, rows: r, ...p.openOpts }); p.alloc(c, r); sendTo(p, { t: 'want' }); if (p.on) p.on({ t: 'resized', cols: c, rows: r, initial: true }); }
+    else if (c !== p.cols || r !== p.rows) { sendTo(p, { t: 'resize', cols: c, rows: r }); p.alloc(c, r); if (p.on) p.on({ t: 'resized', cols: c, rows: r }); }
     sendTo(p, { t: 'metrics', cw: cellW, ch: cellH, sw: p.rect.w, sh: p.rect.h });
     p.full = true;
   });
   scheduleDraw();
 }
-new ResizeObserver(() => layout()).observe(canvas);
+const ro = new ResizeObserver(() => layout()); ro.observe(canvas); cleanups.push(() => ro.disconnect());
 
-function newPane() { const p = new Pane(nextId++); panes.set(p.id, p); focused = p; layout(); return p; }
+function newPane(openOpts = {}) { const p = new Pane(hub.id()); p.openOpts = openOpts; p.on = cfg.onEvent || null; panes.set(p.id, p); focused = p; hub.route(p.id, (data) => onHostMessage(p, data)); layout(); return p; }
 function closePane(p) {
-  sendTo(p, { t: 'close' }); panes.delete(p.id); p.dispose();
-  if (!panes.size) { window.close(); return; }
+  sendTo(p, { t: 'close' }); panes.delete(p.id); hub.unroute(p.id); p.dispose();
+  if (!panes.size) { if (cfg.onEmpty) cfg.onEmpty(); return; }
   if (focused === p) focused = [...panes.values()].pop();
   layout();
 }
@@ -420,7 +449,6 @@ function paneAt(px, py) { for (const p of panes.values()) { const r = p.rect; if
 // ---------- input ----------
 // Keys go to libghostty's encoder (kitty keyboard protocol, DECCKM, modifyOtherKeys...): the renderer
 // only describes the physical key + modifiers + text. A hidden textarea owns focus so the OS IME works.
-const ime = document.getElementById('ime');
 const MOD = { SHIFT: 1, CTRL: 2, ALT: 4, SUPER: 8, CAPS: 16, NUM: 32 };
 const modsOf = (e) => (e.shiftKey ? MOD.SHIFT : 0) | (e.ctrlKey ? MOD.CTRL : 0) | (e.altKey ? MOD.ALT : 0) | (e.metaKey ? MOD.SUPER : 0) |
   (e.getModifierState && e.getModifierState('CapsLock') ? MOD.CAPS : 0) | (e.getModifierState && e.getModifierState('NumLock') ? MOD.NUM : 0);
@@ -439,14 +467,15 @@ ime.addEventListener('compositionstart', () => { composing = true; });
 ime.addEventListener('compositionend', (e) => { composing = false; if (e.data) send({ t: 'text', text: e.data }); ime.value = ''; });
 ime.addEventListener('keydown', (e) => {
   if (composing || e.isComposing || e.keyCode === 229) return;       // the IME owns these keys
+  if (cfg.keyFilter && cfg.keyFilter(e) === false) return;           // attachCustomKeyEventHandler: false = skip our handling
   if (e.metaKey) {                                                    // app shortcuts
     if (e.code === 'KeyC') { send({ t: 'copy' }); e.preventDefault(); return; }
     if (e.code === 'KeyA') { send({ t: 'selectAll' }); e.preventDefault(); return; }
     if (e.code === 'KeyV') return;                                    // let the paste event fire
-    if (e.code === 'KeyD') { newPane(); e.preventDefault(); return; }
-    if (e.code === 'KeyW') { closePane(focused); e.preventDefault(); return; }
-    if (e.code === 'BracketRight') { focusStep(1); e.preventDefault(); return; }
-    if (e.code === 'BracketLeft') { focusStep(-1); e.preventDefault(); return; }
+    if (cfg.panes && e.code === 'KeyD') { newPane(); e.preventDefault(); return; }
+    if (cfg.panes && e.code === 'KeyW') { closePane(focused); e.preventDefault(); return; }
+    if (cfg.panes && e.code === 'BracketRight') { focusStep(1); e.preventDefault(); return; }
+    if (cfg.panes && e.code === 'BracketLeft') { focusStep(-1); e.preventDefault(); return; }
   }
   if (sendKey(e, e.repeat ? 2 : 1)) e.preventDefault();
 });
@@ -473,7 +502,8 @@ canvas.addEventListener('mousedown', (e) => {
   if (e.metaKey && e.button === 0) { port.postMessage({ t: 'link', id: p.id, x: m.x, y: m.y }); e.preventDefault(); return; }   // Cmd+click opens an OSC 8 link
   pressed |= 1 << e.button; port.postMessage(m); e.preventDefault();
 });
-window.addEventListener('mouseup', (e) => { if (!pressed || !dragPane) return; port.postMessage(mouseMsg(e, 1, dragPane)); pressed &= ~(1 << e.button); });
+const onMouseUp = (e) => { if (!pressed || !dragPane) return; port.postMessage(mouseMsg(e, 1, dragPane)); pressed &= ~(1 << e.button); };
+window.addEventListener('mouseup', onMouseUp); cleanups.push(() => window.removeEventListener('mouseup', onMouseUp));
 let lastMove = 0;
 canvas.addEventListener('mousemove', (e) => {
   const now = performance.now(); if (now - lastMove < 8) return; lastMove = now;   // ~120 Hz cap
@@ -490,7 +520,7 @@ canvas.addEventListener('wheel', (e) => {
 canvas.addEventListener('contextmenu', (e) => e.preventDefault());
 
 // ---- key->pixel latency probe (used by the benchmark; no cost when idle)
-window.__latency = async (n) => {
+W.__latency = async (n) => {
   const out = [];
   const find = (ch) => { const p = focused, cy = p.cursor.y; for (let x = 0; x < p.cols; x++) if (p.shadow[(cy * p.cols + x) * 4] === ch.codePointAt(0)) return true; return false; };
   for (let i = 0; i < n; i++) {
@@ -508,21 +538,34 @@ window.__latency = async (n) => {
   return out;
 };
 
-// ---------- wiring ----------
-window.addEventListener('message', (e) => {
-  if (e.data !== 'term-port' || !e.ports[0]) return;
-  port = e.ports[0];
-  port.onmessage = ({ data }) => {
-    const p = panes.get(data.id);
-    if (data.t === 'frame') { if (p) { stats.tRecv = performance.now(); applyFrame(p, data.buf); scheduleDraw(); } }
-    else if (data.t === 'image') { if (p) { onImage(p, data); stats.images = p.images.size; } }
-    else if (data.t === 'placements') { if (p) { onPlacements(p, data.list); scheduleDraw(); } }
-    else if (data.t === 'exit') { if (p) closePane(p); }
-    else if (data.t === 'stats') window.__hostStats = data;
-    else if (data.t === 'clipboard') { window.__lastClip = data.text; if (data.text) navigator.clipboard.writeText(data.text).catch(() => {}); }
-    else if (data.t === 'clipboard-write') { window.__lastOsc52 = data.text; navigator.clipboard.writeText(data.text).catch(() => {}); }   // only reaches us when the embedder set osc52: 'allow'
-    else if (data.t === 'open-link') { window.__lastLink = data.uri; try { const u = new URL(data.uri); if (/^(https?|mailto):$/.test(u.protocol)) window.open(u.href); } catch { /* not a URL */ } }
-  };
-  newPane();
-  ime.focus();
-});
+// ---------- host messages ----------
+function onHostMessage(p, data) {
+  if (data.t === 'frame') { stats.tRecv = performance.now(); applyFrame(p, data.buf); scheduleDraw(); }
+  else if (data.t === 'image') { onImage(p, data); stats.images = p.images.size; }
+  else if (data.t === 'placements') { onPlacements(p, data.list); scheduleDraw(); }
+  else if (data.t === 'exit') { if (p.on) p.on(data); if (cfg.closeOnExit !== false) closePane(p); }
+  else if (data.t === 'stats') W.__hostStats = data;
+  else if (data.t === 'clipboard') { W.__lastClip = data.text; if (data.text) navigator.clipboard.writeText(data.text).catch(() => {}); }
+  else if (data.t === 'clipboard-write') { W.__lastOsc52 = data.text; navigator.clipboard.writeText(data.text).catch(() => {}); }   // only reaches us when the embedder set osc52: 'allow'
+  else if (data.t === 'open-link') { W.__lastLink = data.uri; try { const u = new URL(data.uri); if (/^(https?|mailto):$/.test(u.protocol)) window.open(u.href); } catch { /* not a URL */ } }
+  else if (p.on) p.on(data);                   // data / bell / title / selection / paste-rejected: for the xterm-style facade
+}
+
+hub.whenPort((pt) => { port = pt; layout(); if (cfg.autoPane && !panes.size) newPane(); if (cfg.autofocus !== false) ime.focus(); });
+
+return {
+  newPane, closePane, layout, scheduleDraw, panes,
+  get focused() { return focused; },
+  focus() { ime.focus(); },
+  send, sendTo,
+  get cell() { return { w: cellW, h: cellH, dpr }; },
+  setFont(family, size) { if (family) FONT_FAMILY = family; if (size) FONT_CSS_PX = size; layout(); },
+  stats,
+  dispose() { for (const c of cleanups) c(); for (const p of [...panes.values()]) { sendTo(p, { t: 'close' }); hub.unroute(p.id); p.dispose(); } panes.clear(); },
+};
+}
+
+// ---------- demo page wiring (index.html): one renderer over the whole window ----------
+if (document.getElementById('c') && document.getElementById('ime') && !window.__ghosttyNoDemo) {
+  createRenderer({ canvas: document.getElementById('c'), ime: document.getElementById('ime'), expose: true, panes: true, autoPane: true, onEmpty: () => window.close() });
+}

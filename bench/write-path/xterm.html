@@ -1,0 +1,17 @@
+<!doctype html><html><head><meta charset="utf-8">
+<link rel="stylesheet" href="../../node_modules/@xterm/xterm/css/xterm.css">
+<style>html,body{margin:0;height:100%;background:#000}</style></head>
+<body><div id="t"></div>
+<script src="../../node_modules/@xterm/xterm/lib/xterm.js"></script>
+<script src="../../node_modules/@xterm/addon-webgl/lib/addon-webgl.js"></script>
+<script src="common.js"></script>
+<script>
+const term = new Terminal({ cols: 118, rows: 40, scrollback: 100000, fontFamily: 'Menlo', fontSize: 14, allowProposedApi: true });
+term.open(document.getElementById('t'));
+term.loadAddon(new WebglAddon.WebglAddon());
+window.__ready = Promise.resolve(true);
+// NOOP=1: same corpus handling in the page but nothing is written, to separate the page's own copy of the corpus from the terminal's memory
+const noop = location.search.includes('noop');
+window.__run = () => window.__feed((c, cb) => (noop ? (cb && cb()) : term.write(c, cb)));
+window.__lines = () => term.buffer.active.length;
+</script></body></html>

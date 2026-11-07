@@ -147,3 +147,22 @@ Dwa błędy znalezione dzięki pomiarowi: (1) czekanie na `requestAnimationFrame
 Wynik zgodny z poprzednim przebiegiem pod obciążeniem (45,2 MB/s, 3,1x), więc brak widocznej regresji; wariancja
 duża (jeden przebieg ghostty 125 MB/s, reszta ~40-46). Przyrost pamięci 27 MB vs 18 MB wcześniej: nie rozstrzygnięto,
 czy to szum pomiaru, czy koszt (np. atlas, bufory paneli); wymaga powtórzenia na spokojnej maszynie.
+
+## Ścieżka write() (API w stylu xterm.js, tryb `external`), 2026-11-07
+
+Aplikacja ma bajty (własny PTY, ssh, plik) i wywołuje `term.write(chunk)`. To samo okno Electrona, ten sam korpus 36 MB
+(1M linii), porcje 64 KB, każda w osobnym zadaniu (jak dostawy IPC), scrollback 100k linii, bez PTY. Czas do
+potwierdzenia sparsowania ostatniej porcji (callback `write`). 5 przebiegów w przeplocie, mediana; pamięć = `footprint`
+całego drzewa po 6 s ustabilizowania minus przebieg kontrolny, w którym strona wczytuje ten sam korpus, ale niczego nie pisze.
+
+| | xterm.js 6 + WebGL | electron-ghostty (facade) | stosunek |
+|---|---|---|---|
+| czas | 0,54 s | 0,09 s | 5,7x szybciej |
+| przepustowość | 67,6 MB/s | 383 MB/s | |
+| pamięć terminala po flood | 276 MB | 71 MB | 3,9x mniej |
+
+Uwagi: (1) to nie jest przepustowość PTY (tam sufit to ~170 MB/s), tylko koszt samego zapisu do terminala; (2) w trybie
+`external` bajty przechodzą przez `MessagePort` do hosta, ale MessagePortMain nie odbiera przeniesionych ArrayBuffer
+(host dostaje `null`), więc porcje są kopiowane; (3) pierwsza wersja trybu `external` nie kompresowała scrollbacku
+(host 128 MB po floodzie), dodano wątek kompresji w bezczynności i twardy próg jak w trybie PTY (host 39 MB);
+(4) jeden komputer, współdzielony; zakres wariancji nie był badany poza 5 przebiegami.

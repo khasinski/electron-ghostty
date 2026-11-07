@@ -70,6 +70,9 @@ struct Term {
   pid_t pid = -1;
   std::thread reader;   // PTY -> buffers
   std::thread parser;   // buffers -> libghostty (overlaps with reads)
+  std::thread idler;    // external mode only: idle scrollback compression (the parser thread does this in PTY mode)
+  std::atomic<bool> extDirty{false};
+  unsigned extWrites = 0;
   struct Buf { std::vector<uint8_t> data; size_t len = 0; };
   std::mutex qmu;
   std::condition_variable qcv;
@@ -83,6 +86,7 @@ struct Term {
   std::atomic<bool> wakePending{false};
   std::atomic<bool> closed{false};
   napi_threadsafe_function tsfn = nullptr;
+  bool external = false;            // no PTY: bytes for the child go out through the callback (kind 3)
   std::atomic<int> clipPolicy{0};   // 0 = deny OSC 52 writes (default), 1 = allow
   int exitStatus = 0;
 };
@@ -98,6 +102,7 @@ static void term_close(Term* term) {
   term->qcv.notify_all();
   if (term->reader.joinable()) term->reader.join();
   if (term->parser.joinable()) term->parser.join();
+  if (term->idler.joinable()) term->idler.join();
   for (auto* b : term->allBufs) delete b;
   term->allBufs.clear(); term->freeBufs.clear(); term->filled.clear();
   if (term->pid > 0) { int st; waitpid(term->pid, &st, WNOHANG); term->pid = -1; }
@@ -135,6 +140,16 @@ static void post(Term* term, int kind, std::string text = std::string()) {
   if (napi_call_threadsafe_function(term->tsfn, m, napi_tsfn_nonblocking) != napi_ok) delete m;
 }
 
+// Bytes destined for the child process: PTY master when we own one, otherwise handed to JS (external mode).
+static void pty_out(Term* term, const uint8_t* p, size_t len) {
+  if (term->external) { if (len) post(term, 3, std::string((const char*)p, len)); return; }
+  while (len > 0 && term->master >= 0) {
+    ssize_t n = write(term->master, p, len);
+    if (n < 0) { if (errno == EINTR) continue; if (errno == EAGAIN) { usleep(100); continue; } return; }
+    p += n; len -= (size_t)n;
+  }
+}
+
 // OSC 52 write request. Runs inside vt_write on the parser thread, VT stream paused; must reply synchronously.
 // Default policy is DENY: a program in the terminal must not silently overwrite the user's clipboard.
 static void on_clipboard_write(GhosttyTerminal, void* userdata, const GhosttyClipboardWrite* w) {
@@ -158,12 +173,13 @@ static void on_clipboard_write(GhosttyTerminal, void* userdata, const GhosttyCli
 // Terminal asks to answer on the PTY (DSR, DA, mode queries...). Runs inside vt_write, lock held.
 static void on_write_pty(GhosttyTerminal, void* userdata, const uint8_t* data, size_t len) {
   Term* term = static_cast<Term*>(userdata);
-  if (term->master < 0) return;
-  while (len > 0) {
-    ssize_t n = write(term->master, data, len);
-    if (n < 0) { if (errno == EINTR) continue; return; }
-    data += n; len -= (size_t)n;
-  }
+  pty_out(term, data, len);
+}
+
+static void on_bell(GhosttyTerminal, void* userdata) { post(static_cast<Term*>(userdata), 4); }
+static void on_title(GhosttyTerminal t, void* userdata) {
+  GhosttyString s = {};
+  if (ghostty_terminal_get(t, GHOSTTY_TERMINAL_DATA_TITLE, &s) == GHOSTTY_SUCCESS) post(static_cast<Term*>(userdata), 5, std::string((const char*)s.ptr, s.len));
 }
 
 static uint64_t hot_pages(Term* term) {
@@ -192,7 +208,9 @@ static void call_js(napi_env env, napi_value js_cb, void* ctx, void* data) {
     napi_get_undefined(env, &undefined);
     napi_create_int32(env, (int32_t)m->kind, &args[0]);
     napi_create_int32(env, term->exitStatus, &args[1]);
-    if (m->kind == 2) napi_create_string_utf8(env, m->text.data(), m->text.size(), &args[2]); else napi_get_undefined(env, &args[2]);
+    if (m->kind == 2 || m->kind == 5) napi_create_string_utf8(env, m->text.data(), m->text.size(), &args[2]);
+    else if (m->kind == 3) { void* d; if (napi_create_buffer_copy(env, m->text.size(), m->text.data(), &d, &args[2]) != napi_ok) napi_get_undefined(env, &args[2]); }
+    else napi_get_undefined(env, &args[2]);
     napi_call_function(env, undefined, js_cb, 3, args, nullptr);
   }
   delete m;
@@ -308,6 +326,26 @@ static void parser_main(Term* term) {
   }
 }
 
+// External mode: compress cold scrollback once no bytes have arrived for kIdleMs (same policy as parser_main).
+static void idle_main(Term* term) {
+  std::unique_lock<std::mutex> lk(term->qmu);
+  while (!term->stop.load()) {
+    term->qcv.wait(lk, [&] { return term->stop.load() || term->extDirty.load(); });
+    if (term->stop.load()) return;
+    for (;;) {
+      term->extDirty = false;
+      if (term->qcv.wait_for(lk, std::chrono::milliseconds(kIdleMs), [&] { return term->stop.load() || term->extDirty.load(); })) {
+        if (term->stop.load()) return;
+        continue;                                   // more bytes arrived: keep waiting for quiet
+      }
+      break;
+    }
+    lk.unlock();
+    { std::lock_guard<std::mutex> g(term->mu); if (term->t) compress_drain(term); }
+    lk.lock();
+  }
+}
+
 // ---- JS API ----------------------------------------------------------------------------------
 
 // create(cols, rows, scrollbackMaxBytes, scrollbackMaxLines?) -> handle
@@ -342,6 +380,8 @@ static napi_value Create(napi_env env, napi_callback_info info) {
   ghostty_terminal_set(term->t, GHOSTTY_TERMINAL_OPT_USERDATA, term);
   GhosttyTerminalWritePtyFn fn = on_write_pty;
   ghostty_terminal_set(term->t, GHOSTTY_TERMINAL_OPT_WRITE_PTY, (const void*)fn);
+  GhosttyTerminalBellFn bf = on_bell; ghostty_terminal_set(term->t, GHOSTTY_TERMINAL_OPT_BELL, (const void*)bf);
+  GhosttyTerminalTitleChangedFn tf = on_title; ghostty_terminal_set(term->t, GHOSTTY_TERMINAL_OPT_TITLE_CHANGED, (const void*)tf);
   GhosttyTerminalClipboardWriteFn cw = on_clipboard_write;
   ghostty_terminal_set(term->t, GHOSTTY_TERMINAL_OPT_CLIPBOARD_WRITE, (const void*)cw);
   napi_value ext;
@@ -412,11 +452,7 @@ static napi_value Input(napi_env env, napi_callback_info info) {
   NAPI_CHECK(napi_get_buffer_info(env, argv[1], &data, &len));
   const uint8_t* p = static_cast<const uint8_t*>(data);
   if (len > 0) scroll_to_bottom(term);
-  while (len > 0 && term->master >= 0) {
-    ssize_t n = write(term->master, p, len);
-    if (n < 0) { if (errno == EINTR) continue; if (errno == EAGAIN) { usleep(200); continue; } break; }
-    p += n; len -= (size_t)n;
-  }
+  pty_out(term, p, len);
   return nullptr;
 }
 
@@ -427,8 +463,31 @@ static napi_value Write(napi_env env, napi_callback_info info) {
   Term* term = unwrap(env, argv[0]); if (!term) return nullptr;
   void* data = nullptr; size_t len = 0;
   NAPI_CHECK(napi_get_buffer_info(env, argv[1], &data, &len));
-  std::lock_guard<std::mutex> lk(term->mu);
-  ghostty_terminal_vt_write(term->t, static_cast<const uint8_t*>(data), len);
+  { std::lock_guard<std::mutex> lk(term->mu);
+    ghostty_terminal_vt_write(term->t, static_cast<const uint8_t*>(data), len);
+    if (term->external && (++term->extWrites & 31) == 0 && hot_pages(term) > kHardCapHotPages) compress_drain(term);   // bounds peak memory during a flood
+  }
+  if (term->external) {
+    if (!term->wakePending.exchange(true)) post(term, 0);   // same wake the reader thread sends
+    term->extDirty = true;
+    { std::lock_guard<std::mutex> lk(term->qmu); }
+    term->qcv.notify_all();
+  }
+  return nullptr;
+}
+
+// attach(handle, callback(kind, status, extra)) -- no PTY: the host feeds bytes with write() and receives the
+// child-bound bytes (keys, replies to queries) as kind 3 messages. Also delivers kind 2 (OSC 52), 4 (bell), 5 (title).
+static napi_value Attach(napi_env env, napi_callback_info info) {
+  size_t argc = 2; napi_value argv[2];
+  NAPI_CHECK(napi_get_cb_info(env, info, &argc, argv, nullptr, nullptr));
+  Term* term = unwrap(env, argv[0]); if (!term) return nullptr;
+  if (term->master >= 0 || term->external) { napi_throw_error(env, nullptr, "already attached or spawned"); return nullptr; }
+  term->external = true;
+  napi_value name; napi_create_string_utf8(env, "ghostty-external", NAPI_AUTO_LENGTH, &name);
+  NAPI_CHECK(napi_create_threadsafe_function(env, argv[1], nullptr, name, 0, 1, nullptr, nullptr, term, call_js, &term->tsfn));
+  napi_unref_threadsafe_function(env, term->tsfn);
+  term->idler = std::thread(idle_main, term);
   return nullptr;
 }
 
@@ -582,13 +641,7 @@ static napi_value Compress(napi_env env, napi_callback_info info) {
 
 // ---- input encoding, mouse, selection, theme -------------------------------------------------
 
-static void pty_write(Term* term, const uint8_t* p, size_t len) {
-  while (len > 0 && term->master >= 0) {
-    ssize_t n = write(term->master, p, len);
-    if (n < 0) { if (errno == EINTR) continue; if (errno == EAGAIN) { usleep(100); continue; } return; }
-    p += n; len -= (size_t)n;
-  }
-}
+static void pty_write(Term* term, const uint8_t* p, size_t len) { pty_out(term, p, len); }
 
 static void scroll_to_bottom(Term* term) {
   GhosttyTerminalScrollViewport b = {};
@@ -940,6 +993,7 @@ static napi_value Init(napi_env env, napi_value exports) {
     {"paste", nullptr, Paste, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"setClipboardPolicy", nullptr, SetClipboardPolicy, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"hyperlinkAt", nullptr, HyperlinkAt, nullptr, nullptr, nullptr, napi_default, nullptr},
+    {"attach", nullptr, Attach, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"images", nullptr, Images, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"imageData", nullptr, ImageData, nullptr, nullptr, nullptr, napi_default, nullptr},
     {"stats", nullptr, Stats, nullptr, nullptr, nullptr, napi_default, nullptr},

@@ -14,7 +14,7 @@ app.whenReady().then(() => {
   });
   // The terminal core runs in its own process: PTY bytes never reach main or the renderer.
   require('../lib').attach(win, { osc52: process.env.GHOSTTY_OSC52 || 'deny' });            // same API an embedding app uses
-  win.loadFile(path.join(__dirname, 'index.html'));
+  win.loadFile(path.join(__dirname, process.env.GHOSTTY_PAGE || 'index.html'), process.env.GHOSTTY_MODE ? { query: { mode: process.env.GHOSTTY_MODE } } : undefined);
   if (process.env.BENCH) {
     win.webContents.once('did-finish-load', () => require('../bench/e2e/harness').run(app, win, {
       label: 'electron-ghostty (libghostty-vt + WebGL2)',
