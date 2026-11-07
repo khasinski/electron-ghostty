@@ -10,12 +10,13 @@ Status: działający prototyp (macOS arm64). Zobacz `PLAN.md` i `bench/RESULTS.m
 
 | | xterm.js | electron-ghostty |
 |---|---|---|
-| `cat` 36 MB przez PTY | 36 MB/s | 162 MB/s (≈ sufit PTY macOS, ~170 MB/s) |
-| przyrost pamięci po flood (100k linii) | 344 MB | 18 MB |
+| `cat` 36 MB przez PTY | 41,7 MB/s | 191 MB/s (4,6x; sufit PTY macOS ~170-200 MB/s) |
+| przyrost pamięci po flood (100k linii) | 340 MB | 16 MB (21x mniej) |
 | opóźnienie klawisz → koniec `draw()` | 0,6 ms | 0,3 ms |
-| pamięć w bezczynności (całe drzewo procesów) | 162 MB | 172 MB (stały koszt Chromium dominuje) |
+| pamięć w bezczynności (całe drzewo procesów) | 160 MB | 173 MB (stały koszt Chromium dominuje) |
 
-Metodyka, ograniczenia i pełne dane: `bench/RESULTS.md`.
+Metodyka, ograniczenia i pełne dane: `bench/RESULTS.md`. Wyniki zależą od obciążenia maszyny: pod silnym obciążeniem
+ten sam test dawał 3,0x i +27 MB (patrz RESULTS).
 
 ## Użycie
 
@@ -78,7 +79,7 @@ strona trzyma tylko widoczne wiersze). Reszta rzuca `Error('... is not implement
 | `unicode`, `modes`, `onBinary`, `onLineFeed`, `onWriteParsed`, `registerCharacterJoiner`, `attachCustomWheelEventHandler` | brak odpowiednika lub brak powodu, by mirrorować stan do strony |
 
 Pomiar ścieżki `write()` (bez PTY, ten sam korpus 36 MB, porcje 64 KB, 5 przebiegów w przeplocie, `bench/write-path/run.sh`):
-xterm.js 0,54 s (68 MB/s), electron-ghostty 0,09 s (383 MB/s), czyli ok. 5,7x; pamięć przypisana terminalowi 276 vs 71 MB.
+xterm.js 0,57 s (64 MB/s), electron-ghostty 0,09 s (400 MB/s), czyli ok. 6x; pamięć przypisana terminalowi 285 vs 56 MB (5x mniej).
 
 ## Budowanie
 

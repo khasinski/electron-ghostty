@@ -156,7 +156,8 @@ function handle(data) {
     case 'selectRange': g.select(term, 0, data.x1, data.y1, data.x2, data.y2); selectionChanged(id, p); trySend(id); break;
     case 'clearSelection': g.select(term, 4, 0, 0, 0, 0); selectionChanged(id, p); trySend(id); break;
     case 'write': {                                                                 // external mode: VT bytes from the page
-      g.write(term, Buffer.from(data.buf));
+      const b = data.buf;
+      g.write(term, Buffer.from(b.buffer, b.byteOffset, b.byteLength));      // view, not a copy
       if (data.ack && data.ack.length) port.postMessage({ t: 'ack', id, acks: data.ack });
       break;
     }

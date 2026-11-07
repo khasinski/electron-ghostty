@@ -6,7 +6,7 @@ window.__feed = async (write) => {
   const t0 = performance.now();
   let last;
   for (let o = 0; o < buf.length; o += CH) {
-    const chunk = buf.subarray(o, Math.min(o + CH, buf.length));
+    const chunk = buf.slice(o, Math.min(o + CH, buf.length));   // a fresh buffer per delivery, like an IPC message or a PTY read
     if (o + CH >= buf.length) last = new Promise((r) => write(chunk, r)); else write(chunk);
     await tick();
   }

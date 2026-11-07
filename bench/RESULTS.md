@@ -166,3 +166,13 @@ Uwagi: (1) to nie jest przepustowość PTY (tam sufit to ~170 MB/s), tylko koszt
 (host dostaje `null`), więc porcje są kopiowane; (3) pierwsza wersja trybu `external` nie kompresowała scrollbacku
 (host 128 MB po floodzie), dodano wątek kompresji w bezczynności i twardy próg jak w trybie PTY (host 39 MB);
 (4) jeden komputer, współdzielony; zakres wariancji nie był badany poza 5 przebiegami.
+
+### Aktualizacja 2026-11-07 (maszyna spokojniejsza, load ~4,5; po optymalizacji hosta)
+E2E z PTY (`bench/e2e/run.sh 5`): xterm.js 41,7 MB/s, 0,87 s, idle 160,5 MB, po floodzie 500 MB; electron-ghostty
+191 MB/s, 0,19 s, idle 173,4 MB, po floodzie 189 MB. Czyli 4,6x szybciej, przyrost pamięci 16 MB vs 340 MB (21x).
+Wcześniejszy wynik 3,0x / +27 MB (wyżej) pochodził z przebiegu pod silnym obciążeniem maszyny, nie z regresji refaktoru.
+
+Ścieżka write() po dwóch poprawkach (host nie kopiuje porcji: `Buffer` jako widok; benchmark daje każdej porcji świeży
+bufor jak IPC/PTY, dla obu silników): xterm.js 0,57 s (63,8 MB/s), electron-ghostty 0,09 s (400 MB/s); pamięć
+przypisana terminalowi 285 vs 56 MB. Poprzednia wersja benchmarku dawała ghostty dodatkową kopię (subarray całego
+korpusu), więc zawyżała jego pamięć (71 MB).
