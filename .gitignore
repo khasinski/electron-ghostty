@@ -7,3 +7,6 @@ bench/e2e/corpus.txt
 bench/corpus*
 bench/*.txt
 !bench/RESULTS.md
+prebuilds/
+dist/*.js
+*.tgz

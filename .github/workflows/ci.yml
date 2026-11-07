@@ -1,26 +1,74 @@
 name: ci
 on: [push, pull_request]
 jobs:
-  build-test:
+  build:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-24.04, ubuntu-24.04-arm]
+        # Linux builds on 22.04 so the prebuild needs glibc >= 2.35 only.
+        os: [macos-latest, ubuntu-22.04, ubuntu-22.04-arm]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 24 }
+        with: { node-version: 22 }
       - uses: mlugg/setup-zig@v2
         with: { version: 0.17.1 }
       - name: libghostty at the pinned commit
         run: |
           git clone https://github.com/ghostty-org/ghostty vendor/ghostty
           git -C vendor/ghostty checkout "$(cat vendor/PINNED_COMMIT)"
-      - run: npm install --ignore-scripts     # the install script would run node-gyp before libghostty exists
-      - run: ZIG=$(which zig) npm run build:native
-      - run: npm test            # native core: PTY, VT, key/mouse encoding (no GUI)
-      - name: prebuild artifact
-        run: tar czf prebuild-${{ matrix.os }}.tgz build/Release/ghostty_native.node
+      - run: npm ci --ignore-scripts          # an install script would run node-gyp before libghostty exists
+      - run: ZIG=$(which zig) npm run build:libghostty
+      - run: npx prebuildify --napi --strip   # -> prebuilds/<platform>-<arch>/ (also leaves build/Release for the tests)
+      - run: npm test                         # native core: PTY, VT, key/mouse encoding (no GUI)
       - uses: actions/upload-artifact@v4
-        with: { name: "prebuild-${{ matrix.os }}", path: "prebuild-*.tgz" }
+        with: { name: "prebuilds-${{ matrix.os }}", path: prebuilds/ }
+
+  pack:
+    needs: build
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/download-artifact@v4
+        with: { path: prebuilds, pattern: "prebuilds-*", merge-multiple: true }
+      - run: npm ci --ignore-scripts
+      - run: find prebuilds -type f
+      - run: npm pack                         # prepack bundles dist/electron-ghostty.js
+      - uses: actions/upload-artifact@v4
+        with: { name: tarball, path: "electron-ghostty-*.tgz" }
+
+  verify-pack:
+    # Install the tarball like a user would (no compiler, no zig, no repo build) and load the shipped prebuild.
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-22.04, ubuntu-22.04-arm]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22 }
+      - uses: actions/download-artifact@v4
+        with: { name: tarball, path: tarball }
+      - run: |
+          mkdir consumer && cd consumer && npm init -y >/dev/null
+          npm install --ignore-scripts --no-audit --no-fund ../tarball/electron-ghostty-*.tgz
+          node ../test/pack-smoke.js node_modules/electron-ghostty
+
+  publish:
+    # Only on a version tag (git tag v0.1.0 && git push --tags) and only when an NPM_TOKEN secret exists.
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: verify-pack
+    runs-on: ubuntu-22.04
+    permissions: { contents: read, id-token: write }
+    steps:
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, registry-url: "https://registry.npmjs.org" }
+      - uses: actions/download-artifact@v4
+        with: { name: tarball, path: tarball }
+      - run: npm publish tarball/electron-ghostty-*.tgz --provenance --access public
+        env: { NODE_AUTH_TOKEN: "${{ secrets.NPM_TOKEN }}" }

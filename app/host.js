@@ -2,7 +2,7 @@
 // Utility process: owns every terminal (libghostty + PTY) of a window and streams dirty rows to the
 // renderer on demand, per pane. One process for all panes: no per-terminal process overhead.
 const path = require('path');
-const g = require(path.join(__dirname, '..', 'build', 'Release', 'ghostty_native.node'));
+const g = require('../lib/native');
 const HDR = 16;
 
 let config = {};

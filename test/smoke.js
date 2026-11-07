@@ -1,6 +1,6 @@
 'use strict';
 const assert = require('assert');
-const g = require('../build/Release/ghostty_native.node');
+const g = require('../lib/native');
 const COLS = 40, ROWS = 6, HDR = 16;
 
 const words = HDR + ROWS + ROWS * COLS * 4;

@@ -1,18 +1,67 @@
 {
   "name": "electron-ghostty",
-  "version": "0.0.0",
-  "private": true,
-  "type": "commonjs",
-  "scripts": {
-    "bench:xterm": "node --expose-gc bench/xterm.js",
-    "bench:ghostty": "node --expose-gc bench/ghostty.js",
-    "build:addon": "node-gyp rebuild",
-    "start": "electron .",
-    "build:libghostty": "sh scripts/build-libghostty.sh",
-    "build:native": "npm run build:libghostty && node-gyp rebuild",
-    "test": "node test/smoke.js && node test/input.js",
-    "test:app": "GHOSTTY_SCRIPT=$PWD/test/app-input.js electron . && GHOSTTY_SCRIPT=$PWD/test/app-kitty.js electron . && GHOSTTY_SCRIPT=$PWD/test/app-panes.js electron . && GHOSTTY_PAGE=xterm-demo.html GHOSTTY_SCRIPT=$PWD/test/app-xterm.js electron . && GHOSTTY_MODE=pty GHOSTTY_PAGE=xterm-demo.html GHOSTTY_SCRIPT=$PWD/test/app-xterm-pty.js electron .",
-    "bench:write-path": "bench/write-path/run.sh 5"
+  "version": "0.1.0",
+  "description": "Fast, low-memory terminal for Electron apps, built on libghostty-vt (native PTY + VT core, WebGL2 renderer, xterm.js-style API)",
+  "keywords": [
+    "electron",
+    "terminal",
+    "terminal-emulator",
+    "libghostty",
+    "ghostty",
+    "xterm",
+    "pty",
+    "webgl"
+  ],
+  "license": "MIT",
+  "author": "Chris Hasinski (https://github.com/khasinski)",
+  "homepage": "https://github.com/khasinski/electron-ghostty#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/khasinski/electron-ghostty.git"
+  },
+  "bugs": {
+    "url": "https://github.com/khasinski/electron-ghostty/issues"
+  },
+  "main": "lib/index.js",
+  "types": "lib/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./renderer": {
+      "types": "./dist/electron-ghostty.d.ts",
+      "default": "./dist/electron-ghostty.js"
+    },
+    "./native": "./lib/native.js",
+    "./app/*": "./app/*",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "app",
+    "dist",
+    "prebuilds",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md",
+    "README.md"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "arm64",
+    "x64"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "peerDependencies": {
+    "electron": ">=45"
+  },
+  "dependencies": {
+    "node-gyp-build": "^4.8.4"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.1",
@@ -22,23 +71,22 @@
     "electron": "^45.2.3",
     "node-addon-api": "^8.9.2",
     "node-gyp": "^13.1.0",
-    "node-pty": "^1.1.0"
+    "node-pty": "^1.1.0",
+    "prebuildify": "^6.0.1"
   },
-  "main": "app/main.js",
-  "description": "Very fast, low-memory terminal for Electron apps, built on libghostty-vt",
-  "license": "MIT",
-  "exports": {
-    ".": "./lib/index.js",
-    "./app/*": "./app/*"
+  "scripts": {
+    "bench:xterm": "node --expose-gc bench/xterm.js",
+    "bench:ghostty": "node --expose-gc bench/ghostty.js",
+    "build:addon": "node-gyp rebuild",
+    "start": "electron app/main.js",
+    "build:libghostty": "sh scripts/build-libghostty.sh",
+    "build:native": "npm run build:libghostty && node-gyp rebuild",
+    "test": "node test/smoke.js && node test/input.js",
+    "test:app": "GHOSTTY_SCRIPT=$PWD/test/app-input.js electron app/main.js && GHOSTTY_SCRIPT=$PWD/test/app-kitty.js electron app/main.js && GHOSTTY_SCRIPT=$PWD/test/app-panes.js electron app/main.js && GHOSTTY_PAGE=xterm-demo.html GHOSTTY_SCRIPT=$PWD/test/app-xterm.js electron app/main.js && GHOSTTY_MODE=pty GHOSTTY_PAGE=xterm-demo.html GHOSTTY_SCRIPT=$PWD/test/app-xterm-pty.js electron app/main.js && GHOSTTY_PAGE=../test/bundle.html GHOSTTY_SCRIPT=$PWD/test/app-xterm.js electron app/main.js",
+    "bench:write-path": "bench/write-path/run.sh 5",
+    "build:bundle": "node scripts/bundle.js",
+    "prebuild": "prebuildify --napi --strip",
+    "prepack": "node scripts/bundle.js"
   },
-  "files": [
-    "lib",
-    "app",
-    "src",
-    "binding.gyp",
-    "scripts",
-    "native/libghostty-vt/include",
-    "README.md",
-    "PLAN.md"
-  ]
+  "type": "commonjs"
 }

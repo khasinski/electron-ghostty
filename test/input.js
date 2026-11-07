@@ -1,6 +1,6 @@
 'use strict';
 const assert = require('assert');
-const g = require('../build/Release/ghostty_native.node');
+const g = require('../lib/native');
 const K = require('../app/keymap.js');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const COLS = 40, ROWS = 6, HDR = 16;

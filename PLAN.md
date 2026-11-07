@@ -159,3 +159,10 @@ szybkość) i `external` (aplikacja woła `write()`, jak w xterm.js; 5,7x szybci
 ścieżce write, patrz `bench/RESULTS.md`). Zmiany pod spodem: renderer jako fabryka `createRenderer` (każdy `Terminal` ma
 własny canvas/kontekst GL, wspólny port do hosta), tryb bez PTY w addonie (`attach`), zdarzenia bell/title, kompresja
 w bezczynności także w trybie `external`. Testy: `test/app-xterm.js`, `test/app-xterm-pty.js`.
+
+### Paczka npm (2026-11-07)
+`electron-ghostty@0.1.0`: prebuildy N-API przez `prebuildify` + `node-gyp-build` (`lib/native.js`), jeden plik dla strony
+(`dist/electron-ghostty.js`, skrypt `scripts/bundle.js`), typy (`lib/index.d.ts`, `dist/electron-ghostty.d.ts`), LICENSE MIT
+i THIRD_PARTY_NOTICES (libghostty-vt). Zweryfikowane lokalnie: tarball 806 kB zainstalowany w czystym projekcie działa
+w Electronie, także z asar (`*.node` odpakowane). CI buduje prebuildy (macOS arm64, Linux x64/arm64), pakuje i weryfikuje
+tarball na trzech systemach; job `publish` rusza tylko na tag `v*` z sekretem `NPM_TOKEN`. Niepublikowane na npm.

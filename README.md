@@ -4,7 +4,7 @@ Szybki terminal do aplikacji Electron, zbudowany na **libghostty-vt** (rdzeń te
 Rdzeń (PTY + parser VT + scrollback) działa natywnie w osobnym procesie, a renderer rysuje siatkę
 jednym wywołaniem WebGL2 na klatkę.
 
-Status: działający prototyp (macOS arm64). Zobacz `PLAN.md` i `bench/RESULTS.md`.
+Status: wczesna wersja (0.1.0), macOS arm64 i Linux. Zobacz `PLAN.md` i `bench/RESULTS.md`.
 
 ## Wyniki (vs xterm.js 6.0 + WebGL, ta sama powłoka Electron, mediana z 5 przebiegów)
 
@@ -17,6 +17,22 @@ Status: działający prototyp (macOS arm64). Zobacz `PLAN.md` i `bench/RESULTS.m
 
 Metodyka, ograniczenia i pełne dane: `bench/RESULTS.md`. Wyniki zależą od obciążenia maszyny: pod silnym obciążeniem
 ten sam test dawał 3,0x i +27 MB (patrz RESULTS).
+
+## Instalacja
+
+```sh
+npm install electron-ghostty
+```
+
+Paczka zawiera gotowe binaria (prebuilds, N-API) dla: **macOS arm64, Linux x64, Linux arm64** (Linux: glibc >= 2.35).
+Nie trzeba kompilatora ani `zig`. Windows i macOS x64 nie są wspierane. Testowane tylko z Electronem 45 (`peerDependencies`:
+`electron >= 45`). Brak binarki dla Twojej platformy kończy się czytelnym błędem z listą wspieranych platform.
+
+Aplikacja pakowana do asar musi odpakować natywne pliki, np. w electron-builder:
+`"asarUnpack": ["**/node_modules/electron-ghostty/prebuilds/**"]` (zweryfikowane z `@electron/asar --unpack "*.node"`).
+
+Strona używa jednego pliku: `<script src="node_modules/electron-ghostty/dist/electron-ghostty.js">` (albo
+`import 'electron-ghostty/renderer'` w bundlerze), który ustawia `window.ghostty`; typy: `electron-ghostty/renderer`.
 
 ## Użycie
 
@@ -90,7 +106,7 @@ z `vendor/PINNED_COMMIT` (C API libghostty-vt jeszcze się zmienia).
 git clone https://github.com/ghostty-org/ghostty vendor/ghostty && git -C vendor/ghostty checkout $(cat vendor/PINNED_COMMIT)
 npm install
 npm run build:native      # libghostty-vt + addon N-API
-npm start                 # aplikacja demo
+npm start                 # aplikacja demo (electron app/main.js)
 npm test                  # testy natywne
 npm run test:app          # test z prawdziwymi zdarzeniami wejścia (okno ukryte)
 bench/e2e/run.sh 5        # porównanie z xterm.js (potrzebuje: npm i -D @xterm/xterm @xterm/addon-webgl node-pty; make-corpus)
@@ -111,5 +127,5 @@ ograniczenie: warstwy poniżej tekstu/tła rysowane są nad tekstem).
 - WebGPU i natywna rasteryzacja glifów: nie zrobione; decyzja w `PLAN.md` (rendering nie jest wąskim gardłem, patrz pomiary).
 - Linux: zweryfikowany w Dockerze arm64 (Electron 45 pod xvfb, WebGL przez SwiftShader): pełny `test/app-input.js` przechodzi (`scripts/test-linux-docker.sh`, uruchamiany: `docker run --rm -v $PWD:/src:ro -v $PWD/scripts:/s:ro node:22-bookworm bash /s/test-linux-docker.sh`). Nie testowano na realnym GPU ani x64.
 - Windows: brak ConPTY, nie działa.
-- Prebuilds/CI: `.github/workflows/ci.yml` przechodzi na GitHubie dla macOS (`macos-latest`; `macos-14` nie startował), Linux x64 i arm64: build libghostty + addon, `npm test`, artefakt prebuild. Prebuildy nie są publikowane na npm.
+- Prebuildy: budowane i weryfikowane w CI (macOS arm64, Linux x64/arm64; instalacja tarballa bez kompilatora), publikacja na npm dopiero po utworzeniu tagu `v*` i ustawieniu `NPM_TOKEN`. macOS x64 i Windows: brak.
 - `MessagePortMain` kopiuje bufory klatek (kilka KB na klatkę).

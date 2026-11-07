@@ -1,5 +1,5 @@
 'use strict';
-const g = require('../build/Release/ghostty_native.node');
+const g = require('../lib/native');
 const { footprint } = require('./footprint');
 const { realLines, coloredLines, plainLines, chunks, mb } = require('./payload');
 
